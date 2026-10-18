@@ -4,6 +4,9 @@
 .env.*.local
 *.env
 
+# Local architecture & briefs (untracked)
+PROJECT_BRIEF.md
+
 # Python caches
 __pycache__/
 *.py[cod]
