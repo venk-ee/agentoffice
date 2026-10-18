@@ -4,7 +4,7 @@ import openpyxl
 
 file_path = (
     Path(__file__).resolve().parent.parent
-    / "templates"
+    / "testing_templates"
     / "tests"
     / "startup_burn_report.xlsx"
 )
