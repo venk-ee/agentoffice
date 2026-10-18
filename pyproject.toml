@@ -1,0 +1,22 @@
+[project]
+name = "agent-nexus"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "openai",
+    "openpyxl",
+    "python-dotenv",
+    "pydantic>=2.0"
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (syntax / undefined names)
+    "I",   # isort (automatically sort imports)
+    "UP",  # pyupgrade (modern Python syntax)
+]

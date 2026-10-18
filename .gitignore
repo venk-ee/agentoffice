@@ -18,3 +18,7 @@ ENV/
 tests/*output*.xlsx
 test.xlsx
 outputs/
+
+# IDE & Editor settings
+.vscode/
+.idea/

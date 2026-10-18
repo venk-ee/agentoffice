@@ -1,7 +1,7 @@
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.workbook.defined_name import DefinedName
+
 
 def create_startup_burn_template(filename: str = "templates/startup_burn_report.xlsx"):
     wb = openpyxl.Workbook()
@@ -12,22 +12,28 @@ def create_startup_burn_template(filename: str = "templates/startup_burn_report.
     brand_blue = "1F4E79"
     soft_gray = "F2F2F2"
     border_gray = "D9D9D9"
-    
+
     title_font = Font(name="Calibri", size=16, bold=True, color="FFFFFF")
     section_font = Font(name="Calibri", size=11, bold=True, color=brand_blue)
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     bold_font = Font(name="Calibri", size=11, bold=True)
     normal_font = Font(name="Calibri", size=11)
-    
-    title_fill = PatternFill(start_color=brand_blue, end_color=brand_blue, fill_type="solid")
-    header_fill = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
-    summary_fill = PatternFill(start_color=soft_gray, end_color=soft_gray, fill_type="solid")
-    
+
+    title_fill = PatternFill(
+        start_color=brand_blue, end_color=brand_blue, fill_type="solid"
+    )
+    header_fill = PatternFill(
+        start_color="2F5597", end_color="2F5597", fill_type="solid"
+    )
+    summary_fill = PatternFill(
+        start_color=soft_gray, end_color=soft_gray, fill_type="solid"
+    )
+
     thin_border = Border(
-        left=Side(style='thin', color=border_gray),
-        right=Side(style='thin', color=border_gray),
-        top=Side(style='thin', color=border_gray),
-        bottom=Side(style='thin', color=border_gray)
+        left=Side(style="thin", color=border_gray),
+        right=Side(style="thin", color=border_gray),
+        top=Side(style="thin", color=border_gray),
+        bottom=Side(style="thin", color=border_gray),
     )
 
     # 1. Title Banner (Rows 1-2)
@@ -88,7 +94,9 @@ def create_startup_burn_template(filename: str = "templates/startup_burn_report.
     ws["D7"].font = bold_font
     # Formula: Starting Cash / Net Monthly Burn
     ws["E7"] = "=ROUND(E3/E6, 1)"
-    ws["E7"].font = Font(name="Calibri", size=11, bold=True, color="C00000")  # Alert color
+    ws["E7"].font = Font(
+        name="Calibri", size=11, bold=True, color="C00000"
+    )  # Alert color
     ws["E7"].number_format = "0.0"
 
     for r in range(3, 8):
@@ -140,11 +148,14 @@ def create_startup_burn_template(filename: str = "templates/startup_burn_report.
     # 5. Define Official Named Ranges (The Approved Slots for Agents)
     # Target syntax: 'SheetName'!$Col$Row
     wb.defined_names.add(DefinedName("CompanyName", attr_text="'Burn & Runway'!$B$3"))
-    wb.defined_names.add(DefinedName("ReportingQuarter", attr_text="'Burn & Runway'!$B$4"))
+    wb.defined_names.add(
+        DefinedName("ReportingQuarter", attr_text="'Burn & Runway'!$B$4")
+    )
     wb.defined_names.add(DefinedName("StartingCash", attr_text="'Burn & Runway'!$E$3"))
 
     wb.save(filename)
     print(f"Generated realistic template at: {filename}")
+
 
 if __name__ == "__main__":
     create_startup_burn_template()
