@@ -177,6 +177,7 @@ class ExcelEngine:
                     )
 
             updated_tables = []
+            appended_cells = []
             for t_name, rows in (tables or {}).items():
                 if not isinstance(rows, list):
                     raise TypeError(f"Table rows for '{t_name}' must be a list")
@@ -211,10 +212,16 @@ class ExcelEngine:
                     max_row += 1
                     for c_idx, val in enumerate(row_vals, start=min_col):
                         ws.cell(row=max_row, column=c_idx, value=val)
+                        appended_cells.append((ws.title, max_row, c_idx, val))
 
                 tbl.ref = f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
                 updated_tables.append(
-                    {"table": t_name, "rows_appended": len(rows), "new_range": tbl.ref}
+                    {
+                        "table": t_name,
+                        "sheet": ws.title,
+                        "rows_appended": len(rows),
+                        "new_range": tbl.ref,
+                    }
                 )
 
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -234,6 +241,30 @@ class ExcelEngine:
                     if saved_val != slot_info["value"]:
                         raise OSError(
                             f"Verification failed: slot '{slot_info['name']}' value mismatch on disk"
+                        )
+                for tbl_info in updated_tables:
+                    t_name = tbl_info["table"]
+                    sheet_name = tbl_info["sheet"]
+                    expected_ref = tbl_info["new_range"]
+                    if sheet_name not in verify_wb:
+                        raise OSError(
+                            f"Verification failed: sheet '{sheet_name}' for table '{t_name}' not found on disk"
+                        )
+                    ws_verify = verify_wb[sheet_name]
+                    if t_name not in ws_verify.tables:
+                        raise OSError(
+                            f"Verification failed: table '{t_name}' not found on disk"
+                        )
+                    saved_tbl = ws_verify.tables[t_name]
+                    if saved_tbl.ref != expected_ref:
+                        raise OSError(
+                            f"Verification failed: table '{t_name}' range mismatch on disk (expected {expected_ref}, got {saved_tbl.ref})"
+                        )
+                for sheet_name, r, c, expected_val in appended_cells:
+                    saved_val = verify_wb[sheet_name].cell(row=r, column=c).value
+                    if saved_val != expected_val:
+                        raise OSError(
+                            f"Verification failed: table cell ({sheet_name}!R{r}C{c}) value mismatch on disk"
                         )
             finally:
                 verify_wb.close()

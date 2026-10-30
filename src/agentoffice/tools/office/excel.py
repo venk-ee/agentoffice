@@ -78,7 +78,15 @@ class ReadRangeTool(BaseTool):
 
 
 class ApplyTemplateUpdateTool(BaseTool):
-    def __init__(self, engine: ExcelEngine | None = None):
+    def __init__(
+        self,
+        engine: ExcelEngine,
+        output_dir: str | Path | None = None,
+    ):
+        if not isinstance(engine, ExcelEngine) or not engine.approved_templates_dir:
+            raise ValueError(
+                "ApplyTemplateUpdateTool requires an ExcelEngine configured with 'approved_templates_dir'."
+            )
         super().__init__(
             name="apply_template_update",
             description=(
@@ -94,15 +102,7 @@ class ApplyTemplateUpdateTool(BaseTool):
                     },
                     "output_filename": {
                         "type": "string",
-                        "description": "Destination file path or name for the generated report (e.g. 'q3_report.xlsx').",
-                    },
-                    "template_path": {
-                        "type": "string",
-                        "description": "Optional explicit path to the template file.",
-                    },
-                    "output_path": {
-                        "type": "string",
-                        "description": "Optional explicit path to the output destination.",
+                        "description": "Output filename for the generated report (e.g. 'q3_report.xlsx').",
                     },
                     "slots": {
                         "type": "object",
@@ -110,57 +110,43 @@ class ApplyTemplateUpdateTool(BaseTool):
                     },
                     "tables": {
                         "type": "object",
-                        "description": "Optional mapping of native table names to lists of row dictionaries to append.",
+                        "description": "Optional mapping of native table names to lists of row dictionaries or row lists to append.",
                     },
                 },
-                "required": ["slots"],
+                "required": ["template_id", "output_filename", "slots"],
             },
         )
-        self.engine = engine or ExcelEngine()
+        self.engine = engine
+        self.output_dir = Path(output_dir).resolve() if output_dir else None
 
     def execute(
         self,
-        template_id: str | None = None,
-        template_path: str | Path | None = None,
-        output_path: str | Path | None = None,
-        output_filename: str | None = None,
-        slots: dict[str, Any] | None = None,
+        template_id: str,
+        output_filename: str,
+        slots: dict[str, Any],
         tables: dict[str, list[dict[str, Any] | list[Any]]] | None = None,
     ) -> dict[str, Any]:
-        resolved_template = None
-        if template_id:
-            if self.engine.approved_templates_dir:
-                filename = (
-                    template_id
-                    if template_id.endswith(".xlsx")
-                    else f"{template_id}.xlsx"
-                )
-                candidate = self.engine.approved_templates_dir / filename
-                if candidate.exists():
-                    resolved_template = candidate
-            if not resolved_template:
-                resolved_template = Path(
-                    template_id
-                    if template_id.endswith(".xlsx")
-                    else f"{template_id}.xlsx"
+        filename = (
+            template_id if template_id.endswith(".xlsx") else f"{template_id}.xlsx"
+        )
+        template_path = self.engine.approved_templates_dir / filename
+        if not template_path.exists():
+            raise FileNotFoundError(
+                f"Approved template '{template_id}' not found in {self.engine.approved_templates_dir}"
+            )
+
+        if self.output_dir:
+            dest_path = (self.output_dir / output_filename).resolve()
+            if not dest_path.is_relative_to(self.output_dir):
+                raise PermissionError(
+                    f"Output filename '{output_filename}' resolves outside approved output directory: {self.output_dir}"
                 )
         else:
-            resolved_template = template_path
-
-        if not resolved_template:
-            raise ValueError(
-                "Either 'template_id' or 'template_path' must be provided."
-            )
-
-        resolved_output = output_path or output_filename
-        if not resolved_output:
-            raise ValueError(
-                "Either 'output_path' or 'output_filename' must be provided."
-            )
+            dest_path = Path(output_filename).resolve()
 
         return self.engine.apply_template_update(
-            template_path=resolved_template,
-            output_path=resolved_output,
+            template_path=template_path,
+            output_path=dest_path,
             slots=slots,
             tables=tables,
         )

@@ -357,11 +357,12 @@ class TestExcelEngine(unittest.TestCase):
         self.assertEqual(read_res["range"], "A1:B2")
         self.assertEqual(len(read_res["values"]), 2)
 
-        update_tool = ApplyTemplateUpdateTool(engine=self.engine)
+        engine_with_tmpl = ExcelEngine(approved_templates_dir=self.temp_path)
+        update_tool = ApplyTemplateUpdateTool(engine=engine_with_tmpl)
         out_path = self.temp_path / "tool_out.xlsx"
         update_res = update_tool.execute(
-            template_path=self.wb_path,
-            output_path=out_path,
+            template_id="test_multisheet",
+            output_filename=str(out_path),
             slots={"SingleSlot": 7777},
         )
         self.assertEqual(update_res["status"], "success")
@@ -419,6 +420,80 @@ class TestExcelEngine(unittest.TestCase):
         )
         self.assertEqual(res["status"], "success")
         self.assertTrue(out_file.exists())
+
+    def test_apply_template_update_tool_requires_approved_dir(self):
+        with self.assertRaises(ValueError) as ctx:
+            ApplyTemplateUpdateTool(engine=ExcelEngine())
+        self.assertIn("approved_templates_dir", str(ctx.exception))
+
+    def test_apply_template_update_tool_output_dir_confinement(self):
+        approved_dir = self.temp_path / "approved"
+        approved_dir.mkdir(exist_ok=True)
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "Test"
+        wb.defined_names.add(
+            openpyxl.workbook.defined_name.DefinedName(
+                name="Slot1", attr_text="'Sheet'!$A$1"
+            )
+        )
+        template_file = approved_dir / "simple.xlsx"
+        wb.save(template_file)
+        wb.close()
+
+        output_dir = self.temp_path / "safe_outputs"
+        output_dir.mkdir()
+
+        engine = ExcelEngine(approved_templates_dir=approved_dir)
+        tool = ApplyTemplateUpdateTool(engine=engine, output_dir=output_dir)
+
+        # Attempting path traversal outside output_dir
+        with self.assertRaises(PermissionError) as ctx:
+            tool.execute(
+                template_id="simple",
+                output_filename="../escape.xlsx",
+                slots={"Slot1": "value"},
+            )
+        self.assertIn("resolves outside approved output directory", str(ctx.exception))
+
+    def test_apply_template_update_tool_missing_template(self):
+        approved_dir = self.temp_path / "approved"
+        approved_dir.mkdir(exist_ok=True)
+        engine = ExcelEngine(approved_templates_dir=approved_dir)
+        tool = ApplyTemplateUpdateTool(engine=engine)
+
+        with self.assertRaises(FileNotFoundError) as ctx:
+            tool.execute(
+                template_id="non_existent",
+                output_filename="out.xlsx",
+                slots={"A": 1},
+            )
+        self.assertIn("not found in", str(ctx.exception))
+
+    def test_post_save_table_verification_mismatch(self):
+        out_path = self.temp_path / "table_corrupt_test.xlsx"
+        original_load = openpyxl.load_workbook
+        calls = [0]
+
+        def tampering_load(*args, **kwargs):
+            calls[0] += 1
+            wb = original_load(*args, **kwargs)
+            if calls[0] == 2:  # verify_wb
+                # Tamper with table range to simulate on-disk mismatch
+                ws = wb["Breakdown"]
+                if "DeptCostTable" in ws.tables:
+                    ws.tables["DeptCostTable"].ref = "A1:B100"
+            return wb
+
+        with patch("openpyxl.load_workbook", side_effect=tampering_load):
+            with self.assertRaises(OSError) as ctx:
+                self.engine.apply_template_update(
+                    self.wb_path,
+                    out_path,
+                    tables={"DeptCostTable": [{"Dept": "Support", "Cost": 120}]},
+                )
+            self.assertIn("range mismatch on disk", str(ctx.exception))
+        self.assertFalse(out_path.exists())
 
 
 if __name__ == "__main__":
