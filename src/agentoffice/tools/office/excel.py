@@ -1,154 +1,8 @@
 from pathlib import Path
 from typing import Any
 
-import openpyxl
-
 from agentoffice.tools.base_tools import BaseTool
-
-
-class ExcelEngine:
-    def get_named_slots(self, wb) -> list[dict[str, Any]]:
-        named_slots = []
-        for name, defined_name in wb.defined_names.items():
-            try:
-                destinations = list(defined_name.destinations)
-            except Exception:
-                continue
-
-            for sheet_title, cell_ref in destinations:
-                if sheet_title not in wb:
-                    continue
-                clean_ref = cell_ref.replace("$", "")
-                try:
-                    target = wb[sheet_title][clean_ref]
-                except Exception:
-                    continue
-
-                if isinstance(target, tuple):
-                    values = [[cell.value for cell in row] for row in target]
-                    named_slots.append(
-                        {
-                            "name": name,
-                            "sheet": sheet_title,
-                            "cell": cell_ref,
-                            "value": values,
-                            "is_range": True,
-                        }
-                    )
-                else:
-                    named_slots.append(
-                        {
-                            "name": name,
-                            "sheet": sheet_title,
-                            "cell": cell_ref,
-                            "value": target.value,
-                            "is_range": False,
-                        }
-                    )
-        return named_slots
-
-    def get_native_tables(self, wb) -> list[dict[str, Any]]:
-        tables = []
-        for ws in wb.worksheets:
-            for tbl in ws.tables.values():
-                tables.append({"sheet": ws.title, "name": tbl.name, "range": tbl.ref})
-        return tables
-
-    def get_formulas_cells(self, wb) -> list[dict[str, Any]]:
-        formulas = []
-        for ws in wb.worksheets:
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.data_type == "f" or (
-                        isinstance(cell.value, str) and cell.value.startswith("=")
-                    ):
-                        formulas.append(
-                            {
-                                "sheet": ws.title,
-                                "cell": cell.coordinate,
-                                "formula": cell.value,
-                            }
-                        )
-        return formulas
-
-    def read_range(
-        self,
-        file_path: str | Path,
-        sheet_name: str,
-        start_cell: str,
-        end_cell: str,
-        data_only: bool = False,
-    ) -> dict[str, Any]:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-
-        wb = openpyxl.load_workbook(file_path, data_only=data_only)
-        try:
-            if sheet_name not in wb:
-                raise KeyError(f"Sheet '{sheet_name}' not found in workbook")
-            ws = wb[sheet_name]
-            return {
-                "sheet": sheet_name,
-                "range": f"{start_cell}:{end_cell}",
-                "values": [
-                    [cell.value for cell in row] for row in ws[start_cell:end_cell]
-                ],
-            }
-        finally:
-            wb.close()
-
-    def inspect(self, file_path: str | Path) -> dict[str, Any]:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-
-        wb = openpyxl.load_workbook(file_path, data_only=False)
-        try:
-            active_sheet = wb.active
-            active_title = active_sheet.title if active_sheet else None
-            dimensions = active_sheet.dimensions if active_sheet else None
-            max_row = active_sheet.max_row if active_sheet else None
-            max_column = active_sheet.max_column if active_sheet else None
-
-            sheet_details = {}
-            for ws in wb.worksheets:
-                sheet_details[ws.title] = {
-                    "dimensions": ws.dimensions,
-                    "max_row": ws.max_row,
-                    "max_column": ws.max_column,
-                }
-
-            return {
-                "sheets": wb.sheetnames,
-                "active_sheet": active_title,
-                "dimensions": dimensions,
-                "max_row": max_row,
-                "max_column": max_column,
-                "sheet_details": sheet_details,
-                "named_slots": self.get_named_slots(wb),
-                "formulas": self.get_formulas_cells(wb),
-                "native_tables": self.get_native_tables(wb),
-            }
-        finally:
-            wb.close()
-
-    def edit_cell(
-        self, file_path: str | Path, sheet_name: str, cell: str, value: Any
-    ) -> None:
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {path}")
-
-        wb = openpyxl.load_workbook(file_path, data_only=False)
-        try:
-            if sheet_name not in wb:
-                raise KeyError(f"Sheet '{sheet_name}' not found in workbook")
-            ws = wb[sheet_name]
-            ws[cell] = value
-            wb.save(file_path)
-        finally:
-            wb.close()
+from agentoffice.tools.office.excel_engine import ExcelEngine
 
 
 class InspectWorkbookTool(BaseTool):
@@ -220,4 +74,93 @@ class ReadRangeTool(BaseTool):
     ) -> dict[str, Any]:
         return self.engine.read_range(
             file_path, sheet_name, start_cell, end_cell, data_only=data_only
+        )
+
+
+class ApplyTemplateUpdateTool(BaseTool):
+    def __init__(self, engine: ExcelEngine | None = None):
+        super().__init__(
+            name="apply_template_update",
+            description=(
+                "Apply an atomic batch update to an approved Excel template by filling named slots and tables. "
+                "Preserves all existing formulas, branding, and layout, and saves to a new output file."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "template_id": {
+                        "type": "string",
+                        "description": "Identifier of the approved template (e.g. 'startup_burn_report').",
+                    },
+                    "output_filename": {
+                        "type": "string",
+                        "description": "Destination file path or name for the generated report (e.g. 'q3_report.xlsx').",
+                    },
+                    "template_path": {
+                        "type": "string",
+                        "description": "Optional explicit path to the template file.",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Optional explicit path to the output destination.",
+                    },
+                    "slots": {
+                        "type": "object",
+                        "description": "Key-value dictionary mapping approved named slot names to their new values (e.g. {'CompanyName': 'Nexus Labs', 'StartingCash': 4500000}).",
+                    },
+                    "tables": {
+                        "type": "object",
+                        "description": "Optional mapping of native table names to lists of row dictionaries to append.",
+                    },
+                },
+                "required": ["slots"],
+            },
+        )
+        self.engine = engine or ExcelEngine()
+
+    def execute(
+        self,
+        template_id: str | None = None,
+        template_path: str | Path | None = None,
+        output_path: str | Path | None = None,
+        output_filename: str | None = None,
+        slots: dict[str, Any] | None = None,
+        tables: dict[str, list[dict[str, Any] | list[Any]]] | None = None,
+    ) -> dict[str, Any]:
+        resolved_template = None
+        if template_id:
+            if self.engine.approved_templates_dir:
+                filename = (
+                    template_id
+                    if template_id.endswith(".xlsx")
+                    else f"{template_id}.xlsx"
+                )
+                candidate = self.engine.approved_templates_dir / filename
+                if candidate.exists():
+                    resolved_template = candidate
+            if not resolved_template:
+                resolved_template = Path(
+                    template_id
+                    if template_id.endswith(".xlsx")
+                    else f"{template_id}.xlsx"
+                )
+        else:
+            resolved_template = template_path
+
+        if not resolved_template:
+            raise ValueError(
+                "Either 'template_id' or 'template_path' must be provided."
+            )
+
+        resolved_output = output_path or output_filename
+        if not resolved_output:
+            raise ValueError(
+                "Either 'output_path' or 'output_filename' must be provided."
+            )
+
+        return self.engine.apply_template_update(
+            template_path=resolved_template,
+            output_path=resolved_output,
+            slots=slots,
+            tables=tables,
         )

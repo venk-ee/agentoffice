@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agentoffice.tools.office.excel import ExcelEngine
+from agentoffice.tools.office.excel_engine import ExcelEngine
 
 engine = ExcelEngine()
 template_path = Path("testing_templates/tests/startup_burn_report.xlsx")
