@@ -20,3 +20,8 @@ select = [
     "I",   # isort (automatically sort imports)
     "UP",  # pyupgrade (modern Python syntax)
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
