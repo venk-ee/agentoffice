@@ -31,19 +31,17 @@ class BaseAgent(ABC):
     def register_tool(self, tool: BaseTool):
         self.tool_map[tool.name] = tool
 
-    def execute_tool(self, name: str, argunments_json: str) -> str:
+    def execute_tool(self, name: str, arguments: str) -> str:
         tool = self.tool_map.get(name)
         if not tool:
-            return f"Tool {name} not found"
+            return json.dumps({"error": f"Tool '{name}' not found"})
+
         try:
-            kwargs = json.loads(argunments_json)
-        except Exception as e:
-            return f"Error: Invalid JSON arguments: {e}"
-        try:
+            kwargs = json.loads(arguments) if arguments else {}
             result = tool.execute(**kwargs)
-            return str(result)
+            return json.dumps(result, default=str)
         except Exception as e:
-            return f"Error executing {name}: {type(e).__name__} - {e}"
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     def run(self, message: str, max_iterations: int = 10) -> str:
         messages = []
