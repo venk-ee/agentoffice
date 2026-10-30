@@ -14,5 +14,5 @@ print("Formulas Found:", len(info["formulas"]))
 
 rows = engine.read_range(template_path, "Burn & Runway", "A9", "E12")
 print("\n--- Read Range (A9:E12) ---")
-for row in rows:
+for row in rows["values"]:
     print(row)
