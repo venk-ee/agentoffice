@@ -6,6 +6,8 @@ class BaseTool(ABC):
         self.name = name
         self.description = description
         self.parameters = parameters
+        if "additionalProperties" not in self.parameters:
+            self.parameters["additionalProperties"] = False
 
     @abstractmethod
     def execute(self, **kwargs):
