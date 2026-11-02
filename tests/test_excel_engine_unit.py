@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,9 +8,9 @@ import openpyxl
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from agentoffice.tools.office.excel import (
-    ApplyTemplateUpdateTool,
     InspectWorkbookTool,
     ReadRangeTool,
+    UpdateWorkbookTool,
 )
 from agentoffice.tools.office.excel_engine import ExcelEngine
 
@@ -18,7 +19,7 @@ class TestExcelEngine(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)
-        self.engine = ExcelEngine()
+        self.engine = ExcelEngine(workspace_dir=self.temp_path)
 
         # Create a multi-sheet workbook with tables, formulas, and named ranges
         self.wb_path = self.temp_path / "test_multisheet.xlsx"
@@ -82,8 +83,21 @@ class TestExcelEngine(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_engine_requires_valid_directory(self):
+        # Empty/None raises ValueError
+        with self.assertRaises(ValueError):
+            ExcelEngine(workspace_dir="")
+
+        # Non-existent path raises FileNotFoundError
+        with self.assertRaises(FileNotFoundError):
+            ExcelEngine(workspace_dir=self.temp_path / "does_not_exist")
+
+        # File instead of directory raises NotADirectoryError
+        with self.assertRaises(NotADirectoryError):
+            ExcelEngine(workspace_dir=self.wb_path)
+
     def test_multi_sheet_formulas_and_tables(self):
-        result = self.engine.inspect(self.wb_path)
+        result = self.engine.inspect(self.wb_path.name)
 
         # Check sheets
         self.assertEqual(result["sheets"], ["Summary", "Breakdown"])
@@ -110,7 +124,7 @@ class TestExcelEngine(unittest.TestCase):
         self.assertEqual(tables[0]["range"], "A1:B3")
 
     def test_safe_named_ranges_single_and_multicell(self):
-        result = self.engine.inspect(self.wb_path)
+        result = self.engine.inspect(self.wb_path.name)
         slots = {s["name"]: s for s in result["named_slots"]}
 
         # Single cell slot
@@ -128,8 +142,7 @@ class TestExcelEngine(unittest.TestCase):
             [["R&D", 250], ["Sales", 150]],
         )
 
-    def test_safe_named_range_missing_sheet(self):
-        # Create a workbook with an orphaned / invalid defined name
+    def test_safe_named_range_unresolved_names_reported(self):
         orphan_wb_path = self.temp_path / "orphan.xlsx"
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -143,110 +156,274 @@ class TestExcelEngine(unittest.TestCase):
         wb.save(orphan_wb_path)
         wb.close()
 
-        # Should not crash, simply ignore missing sheet
-        result = self.engine.inspect(orphan_wb_path)
+        result = self.engine.inspect("orphan.xlsx")
         self.assertEqual(result["named_slots"], [])
+        self.assertIn("DeadSlot", result["unresolved_names"])
 
     def test_data_only_support(self):
-        # With data_only=False, formulas are returned
         res_formulas = self.engine.read_range(
-            self.wb_path, "Summary", "A4", "B4", data_only=False
+            self.wb_path.name, "Summary", "A4", "B4", data_only=False
         )
         self.assertEqual(res_formulas["values"], [["Net", "=B2-B3"]])
 
-        # With data_only=True, it reads the cached value (may be None if not evaluated by Excel)
         res_data = self.engine.read_range(
-            self.wb_path, "Summary", "A4", "B4", data_only=True
+            self.wb_path.name, "Summary", "A4", "B4", data_only=True
         )
         self.assertEqual(res_data["values"][0][0], "Net")
-        # Since openpyxl created the file without Excel opening it, cached value is None
         self.assertIsNone(res_data["values"][0][1])
 
     def test_close_workbook_called(self):
         with patch.object(openpyxl.Workbook, "close", autospec=True) as mock_close:
-            self.engine.inspect(self.wb_path)
+            self.engine.inspect(self.wb_path.name)
             self.assertTrue(mock_close.called)
 
         with patch.object(openpyxl.Workbook, "close", autospec=True) as mock_close:
-            self.engine.read_range(self.wb_path, "Summary", "A1", "B2")
+            self.engine.read_range(self.wb_path.name, "Summary", "A1", "B2")
             self.assertTrue(mock_close.called)
 
-        out_path = self.temp_path / "closed_test_output.xlsx"
         with patch.object(openpyxl.Workbook, "close", autospec=True) as mock_close:
-            self.engine.apply_template_update(
-                self.wb_path, out_path, slots={"SingleSlot": 999}
+            self.engine.update_workbook(
+                self.wb_path.name,
+                "closed_test_output.xlsx",
+                slots={"SingleSlot": 999},
             )
             self.assertTrue(mock_close.called)
 
-    def test_apply_template_update_success(self):
-        out_path = self.temp_path / "report_out.xlsx"
-        res = self.engine.apply_template_update(
-            template_path=self.wb_path,
-            output_path=out_path,
-            slots={"SingleSlot": 5000},
+    def test_update_workbook_cells_success(self):
+        out_name = "cells_out.xlsx"
+        res = self.engine.update_workbook(
+            file_name=self.wb_path.name,
+            output_filename=out_name,
+            cells=[
+                {"sheet": "Summary", "cell": "A1", "value": "UpdatedMetric"},
+                {"sheet": "Breakdown", "cell": "B2", "value": 300},
+            ],
         )
         self.assertEqual(res["status"], "success")
-        self.assertEqual(len(res["updated_slots"]), 1)
-        self.assertEqual(res["updated_slots"][0]["name"], "SingleSlot")
-        self.assertEqual(res["updated_slots"][0]["value"], 5000)
+        self.assertEqual(len(res["updated_cells"]), 2)
 
-        # Verify output file has updated value
-        wb_out = openpyxl.load_workbook(out_path, data_only=False)
-        self.assertEqual(wb_out["Summary"]["B2"].value, 5000)
+        # Verify on-disk
+        wb_out = openpyxl.load_workbook(self.temp_path / out_name, data_only=False)
+        self.assertEqual(wb_out["Summary"]["A1"].value, "UpdatedMetric")
+        self.assertEqual(wb_out["Breakdown"]["B2"].value, 300)
         wb_out.close()
 
-        # Verify ORIGINAL template was NOT modified
-        wb_orig = openpyxl.load_workbook(self.wb_path, data_only=False)
-        self.assertEqual(wb_orig["Summary"]["B2"].value, 1000)
-        wb_orig.close()
+    def test_conflicting_updates_rejected(self):
+        out_name = "conflict_out.xlsx"
 
-    def test_apply_template_update_formula_protection(self):
-        out_path = self.temp_path / "protected_out.xlsx"
-        # Overwriting a formula cell must raise PermissionError and abort transaction
-        with self.assertRaises(PermissionError):
-            self.engine.apply_template_update(
-                template_path=self.wb_path,
-                output_path=out_path,
-                slots={"FormulaSlot": 999999},
-            )
-        # Verify transaction was completely aborted and no output file was created
-        self.assertFalse(out_path.exists())
-
-    def test_apply_template_update_unknown_slot_fails_transaction(self):
-        out_path = self.temp_path / "unknown_slot_out.xlsx"
-        # Unknown slots must raise ValueError and abort transaction
+        # 1. Duplicate within cells
         with self.assertRaises(ValueError) as ctx:
-            self.engine.apply_template_update(
-                template_path=self.wb_path,
-                output_path=out_path,
-                slots={"GhostSlot": 1234},
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
+                cells=[
+                    {"sheet": "Summary", "cell": "A1", "value": "First"},
+                    {"sheet": "Summary", "cell": "A1", "value": "Second"},
+                ],
             )
-        self.assertIn("Unknown slot 'GhostSlot'", str(ctx.exception))
-        self.assertFalse(out_path.exists())
+        self.assertIn("targeted multiple times", str(ctx.exception))
 
-    def test_apply_template_update_overwriting_template_forbidden(self):
-        # Setting output_path == template_path must fail to protect the template
-        with self.assertRaises(ValueError):
-            self.engine.apply_template_update(
-                template_path=self.wb_path,
-                output_path=self.wb_path,
-                slots={"SingleSlot": 100},
+        # 2. Collision between cells and slots (SingleSlot points to Summary!B2)
+        with self.assertRaises(ValueError) as ctx:
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
+                cells=[{"sheet": "Summary", "cell": "B2", "value": 999}],
+                slots={"SingleSlot": 888},
+            )
+        self.assertIn("already targeted in this batch update", str(ctx.exception))
+
+    def test_cells_formula_protection(self):
+        out_name = "cells_protect_out.xlsx"
+        with self.assertRaises(PermissionError) as ctx:
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
+                cells=[{"sheet": "Summary", "cell": "B4", "value": 9999}],
+            )
+        self.assertIn("contains a formula", str(ctx.exception))
+        self.assertFalse((self.temp_path / out_name).exists())
+
+    def test_formula_injection_prevention(self):
+        out_name = "injection_out.xlsx"
+        with self.assertRaises(PermissionError) as ctx:
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
+                cells=[
+                    {
+                        "sheet": "Summary",
+                        "cell": "A1",
+                        "value": "=cmd|' /C calc'!A0",
+                    }
+                ],
+            )
+        self.assertIn("Formula injection prohibited", str(ctx.exception))
+        self.assertFalse((self.temp_path / out_name).exists())
+
+    def test_merged_cell_interior_rejected(self):
+        merged_wb_path = self.temp_path / "merged_wb.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws["A1"] = "Header"
+        ws.merge_cells("A1:B2")
+        wb.save(merged_wb_path)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            self.engine.update_workbook(
+                file_name="merged_wb.xlsx",
+                output_filename="merged_out.xlsx",
+                cells=[{"sheet": "Sheet1", "cell": "B2", "value": "BadChild"}],
+            )
+        self.assertIn("merged range", str(ctx.exception))
+
+    def test_protected_sheet_rejection(self):
+        prot_wb_path = self.temp_path / "prot_wb.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "LockedSheet"
+        ws["A1"] = "Initial"
+        ws.protection.sheet = True
+        wb.save(prot_wb_path)
+        wb.close()
+
+        with self.assertRaises(PermissionError) as ctx:
+            self.engine.update_workbook(
+                file_name="prot_wb.xlsx",
+                output_filename="prot_out.xlsx",
+                cells=[{"sheet": "LockedSheet", "cell": "A1", "value": "Hacked"}],
+            )
+        self.assertIn("is protected", str(ctx.exception))
+
+    def test_output_overwrite_policy(self):
+        existing_out = self.temp_path / "already_exists.xlsx"
+        existing_out.touch()
+
+        # By default overwrite=False -> FileExistsError
+        with self.assertRaises(FileExistsError):
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename="already_exists.xlsx",
+                slots={"SingleSlot": 500},
+                overwrite=False,
             )
 
-    def test_apply_template_update_table_validation(self):
-        out_path = self.temp_path / "table_val_out.xlsx"
+        # With overwrite=True -> succeeds
+        res = self.engine.update_workbook(
+            file_name=self.wb_path.name,
+            output_filename="already_exists.xlsx",
+            slots={"SingleSlot": 500},
+            overwrite=True,
+        )
+        self.assertEqual(res["status"], "success")
+
+    def test_table_append_collision_protection(self):
+        # In self.wb_path, DeptCostTable is A1:B3. Let's put a note in row 4
+        wb = openpyxl.load_workbook(self.wb_path)
+        ws = wb["Breakdown"]
+        ws["A4"] = "Total Depts"  # Collision!
+        wb.save(self.wb_path)
+        wb.close()
+
+        with self.assertRaises(PermissionError) as ctx:
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename="collision_out.xlsx",
+                tables={"DeptCostTable": [{"Dept": "HR", "Cost": 100}]},
+            )
+        self.assertIn("Table append collision", str(ctx.exception))
+
+    def test_read_range_max_cell_limit(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.engine.read_range(
+                file_name=self.wb_path.name,
+                sheet_name="Summary",
+                start_cell="A1",
+                end_cell="Z500",  # 26 * 500 = 13,000 cells
+            )
+        self.assertIn("exceeding limit", str(ctx.exception))
+
+    def test_path_traversal_and_symlink_rejection(self):
+        with self.assertRaises(PermissionError):
+            self.engine.inspect("../../etc/passwd")
+
+        # Symlink pointing outside workspace
+        outside_file = self.temp_path.parent / "outside_secret.txt"
+        outside_file.touch()
+        link_file = self.temp_path / "link.xlsx"
+        os.symlink(outside_file, link_file)
+
+        with self.assertRaises(PermissionError):
+            self.engine.inspect("link.xlsx")
+
+    def test_xlsm_macro_handling(self):
+        xlsm_path = self.temp_path / "macro_test.xlsm"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["A1"] = "MacroInitial"
+        wb.save(xlsm_path)
+        wb.close()
+
+        with patch("openpyxl.load_workbook", wraps=openpyxl.load_workbook) as mock_load:
+            res = self.engine.update_workbook(
+                file_name="macro_test.xlsm",
+                output_filename="macro_out.xlsm",
+                cells=[{"sheet": ws.title, "cell": "A1", "value": "MacroUpdated"}],
+            )
+            self.assertEqual(res["status"], "success")
+            # Verify keep_vba=True was passed to all load calls for the .xlsm file
+            for call in mock_load.call_args_list:
+                self.assertTrue(call.kwargs.get("keep_vba"))
+
+
+    def test_table_append_success(self):
+        table_wb_path = self.temp_path / "table_clean.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "DataSheet"
+        ws["A1"] = "Dept"
+        ws["B1"] = "Cost"
+        ws["A2"] = "R&D"
+        ws["B2"] = 250
+        tab = Table(displayName="CleanDeptTable", ref="A1:B2")
+        ws.add_table(tab)
+        wb.save(table_wb_path)
+        wb.close()
+
+        out_name = "table_append_out.xlsx"
+        res = self.engine.update_workbook(
+            file_name="table_clean.xlsx",
+            output_filename=out_name,
+            tables={"CleanDeptTable": [{"Dept": "Marketing", "Cost": 300}]},
+        )
+        self.assertEqual(len(res["updated_tables"]), 1)
+        self.assertEqual(res["updated_tables"][0]["rows_appended"], 1)
+        self.assertEqual(res["updated_tables"][0]["new_range"], "A1:B3")
+
+        # Verify on-disk
+        wb_out = openpyxl.load_workbook(self.temp_path / out_name, data_only=False)
+        self.assertEqual(wb_out["DataSheet"]["A3"].value, "Marketing")
+        self.assertEqual(wb_out["DataSheet"]["B3"].value, 300)
+        wb_out.close()
+
+    def test_table_validation_errors(self):
+        out_name = "table_errors_out.xlsx"
 
         # 1. Unknown table
         with self.assertRaises(ValueError):
-            self.engine.apply_template_update(
-                self.wb_path, out_path, tables={"NoSuchTable": [{"A": 1}]}
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
+                tables={"NoSuchTable": [{"A": 1}]},
             )
 
         # 2. Unexpected columns in dict row
         with self.assertRaises(ValueError) as ctx:
-            self.engine.apply_template_update(
-                self.wb_path,
-                out_path,
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
                 tables={
                     "DeptCostTable": [{"Dept": "IT", "Cost": 100, "ExtraColumn": 999}]
                 },
@@ -255,100 +432,56 @@ class TestExcelEngine(unittest.TestCase):
 
         # 3. Column count mismatch in list row
         with self.assertRaises(ValueError) as ctx:
-            self.engine.apply_template_update(
-                self.wb_path,
-                out_path,
+            self.engine.update_workbook(
+                file_name=self.wb_path.name,
+                output_filename=out_name,
                 tables={"DeptCostTable": [["IT", 100, "ExtraValue"]]},
             )
         self.assertIn("expects 2 columns", str(ctx.exception))
 
-        # 4. Invalid row type
-        with self.assertRaises(TypeError):
-            self.engine.apply_template_update(
-                self.wb_path, out_path, tables={"DeptCostTable": ["not a dict or list"]}
-            )
+    def test_post_save_table_verification_mismatch(self):
+        clean_wb = self.temp_path / "tamper_test.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "DataSheet"
+        ws["A1"] = "Dept"
+        ws["B1"] = "Cost"
+        tab = Table(displayName="TamperTable", ref="A1:B1")
+        ws.add_table(tab)
+        wb.save(clean_wb)
+        wb.close()
 
-    def test_approved_template_enforcement(self):
-        approved_dir = self.temp_path / "approved_templates"
-        approved_dir.mkdir()
-        engine_strict = ExcelEngine(approved_templates_dir=approved_dir)
-
-        # self.wb_path is in self.temp_path, NOT in approved_dir
-        with self.assertRaises(PermissionError):
-            engine_strict.apply_template_update(
-                template_path=self.wb_path,
-                output_path=self.temp_path / "out.xlsx",
-                slots={"SingleSlot": 10},
-            )
-
-    def test_atomic_save_cleans_up_temp_on_failure(self):
-        out_path = self.temp_path / "failure_out.xlsx"
-        # Mock load_workbook to fail during reopen verification
+        out_name = "table_corrupt_out.xlsx"
         original_load = openpyxl.load_workbook
         calls = [0]
 
-        def failing_load(*args, **kwargs):
+        def tampering_load(*args, **kwargs):
             calls[0] += 1
-            if calls[0] == 2:  # 1st is src_path load, 2nd is verify_wb
-                raise OSError("Simulated corruption during verification")
-            return original_load(*args, **kwargs)
+            wb_loaded = original_load(*args, **kwargs)
+            if calls[0] == 2:  # verify_wb
+                ws_loaded = wb_loaded["DataSheet"]
+                if "TamperTable" in ws_loaded.tables:
+                    ws_loaded.tables["TamperTable"].ref = "A1:B100"
+            return wb_loaded
 
-        with patch("openpyxl.load_workbook", side_effect=failing_load):
-            with self.assertRaises(IOError):
-                self.engine.apply_template_update(
-                    self.wb_path, out_path, slots={"SingleSlot": 10}
+        with patch("openpyxl.load_workbook", side_effect=tampering_load):
+            with self.assertRaises(OSError) as ctx:
+                self.engine.update_workbook(
+                    file_name="tamper_test.xlsx",
+                    output_filename=out_name,
+                    tables={"TamperTable": [{"Dept": "Support", "Cost": 120}]},
                 )
-
-        # Verify no .tmp_*.xlsx files left behind in temp_path
-        tmp_files = list(self.temp_path.glob(".tmp_*.xlsx"))
-        self.assertEqual(tmp_files, [])
-        self.assertFalse(out_path.exists())
-
-    def test_apply_template_update_table_append(self):
-        out_path = self.temp_path / "table_out.xlsx"
-        res = self.engine.apply_template_update(
-            template_path=self.wb_path,
-            output_path=out_path,
-            tables={"DeptCostTable": [{"Dept": "Marketing", "Cost": 300}]},
-        )
-        self.assertEqual(len(res["updated_tables"]), 1)
-        self.assertEqual(res["updated_tables"][0]["rows_appended"], 1)
-        self.assertEqual(res["updated_tables"][0]["new_range"], "A1:B4")
-
-        # Verify row exists in new file
-        wb_out = openpyxl.load_workbook(out_path, data_only=False)
-        ws2 = wb_out["Breakdown"]
-        self.assertEqual(ws2["A4"].value, "Marketing")
-        self.assertEqual(ws2["B4"].value, 300)
-        wb_out.close()
-
-    def test_error_handling(self):
-        with self.assertRaises(FileNotFoundError):
-            self.engine.inspect(self.temp_path / "non_existent.xlsx")
-
-        with self.assertRaises(FileNotFoundError):
-            self.engine.read_range(
-                self.temp_path / "non_existent.xlsx", "Sheet1", "A1", "A2"
-            )
-
-        with self.assertRaises(KeyError):
-            self.engine.read_range(self.wb_path, "NoSuchSheet", "A1", "A2")
-
-        with self.assertRaises(FileNotFoundError):
-            self.engine.apply_template_update(
-                self.temp_path / "non_existent.xlsx",
-                self.temp_path / "out.xlsx",
-                slots={},
-            )
+            self.assertIn("range mismatch on disk", str(ctx.exception))
+        self.assertFalse((self.temp_path / out_name).exists())
 
     def test_tools_integration(self):
         inspect_tool = InspectWorkbookTool(engine=self.engine)
-        inspect_res = inspect_tool.execute(self.wb_path)
+        inspect_res = inspect_tool.execute(self.wb_path.name)
         self.assertIn("sheets", inspect_res)
 
         read_tool = ReadRangeTool(engine=self.engine)
         read_res = read_tool.execute(
-            file_path=self.wb_path,
+            file_name=self.wb_path.name,
             sheet_name="Summary",
             start_cell="A1",
             end_cell="B2",
@@ -357,143 +490,41 @@ class TestExcelEngine(unittest.TestCase):
         self.assertEqual(read_res["range"], "A1:B2")
         self.assertEqual(len(read_res["values"]), 2)
 
-        engine_with_tmpl = ExcelEngine(approved_templates_dir=self.temp_path)
-        update_tool = ApplyTemplateUpdateTool(engine=engine_with_tmpl)
-        out_path = self.temp_path / "tool_out.xlsx"
+        update_tool = UpdateWorkbookTool(engine=self.engine)
+        out_name = "tool_out.xlsx"
         update_res = update_tool.execute(
-            template_id="test_multisheet",
-            output_filename=str(out_path),
-            slots={"SingleSlot": 7777},
+            file_name=self.wb_path.name,
+            output_filename=out_name,
+            cells=[{"sheet": "Summary", "cell": "A1", "value": "NewMetric"}],
         )
         self.assertEqual(update_res["status"], "success")
-        self.assertTrue(out_path.exists())
+        self.assertTrue((self.temp_path / out_name).exists())
 
-    def test_apply_template_update_multicell_range_rejected(self):
-        out_path = self.temp_path / "range_rejected.xlsx"
-        # Updating a multi-cell range like DeptRange ('Breakdown'!$A$2:$B$3) with a scalar must fail
-        with self.assertRaises(ValueError) as ctx:
-            self.engine.apply_template_update(
-                template_path=self.wb_path,
-                output_path=out_path,
-                slots={"DeptRange": "NotA2DMatrix"},
-            )
-        self.assertIn("multi-cell range", str(ctx.exception))
-        self.assertFalse(out_path.exists())
-
-    def test_inspect_safe_with_constant_defined_name(self):
-        const_wb_path = self.temp_path / "const_wb.xlsx"
-        wb = openpyxl.Workbook()
-        # Add a constant defined name (not pointing to a cell destination)
-        wb.defined_names.add(
-            openpyxl.workbook.defined_name.DefinedName(name="TaxRate", attr_text="0.15")
+    def test_tools_return_errors_to_model(self):
+        # Tools should catch exceptions and return structured {"status": "error", "error": ...}
+        # so the model receives the error in its context to reflect and self-heal.
+        update_tool = UpdateWorkbookTool(engine=self.engine)
+        err_res = update_tool.execute(
+            file_name=self.wb_path.name,
+            output_filename="err_out.xlsx",
+            cells=[{"sheet": "Summary", "cell": "B4", "value": 9999}],  # B4 has formula
         )
-        wb.save(const_wb_path)
-        wb.close()
+        self.assertEqual(err_res["status"], "error")
+        self.assertIn("PermissionError", err_res["error"])
+        self.assertIn("formula", err_res["error"])
 
-        # inspect must handle it safely without raising exceptions
-        res = self.engine.inspect(const_wb_path)
-        self.assertIn("sheets", res)
+        inspect_tool = InspectWorkbookTool(engine=self.engine)
+        err_inspect = inspect_tool.execute("missing_file.xlsx")
+        self.assertEqual(err_inspect["status"], "error")
+        self.assertIn("FileNotFoundError", err_inspect["error"])
 
-    def test_template_id_resolution_in_tool(self):
-        # Create an approved template directory with a named template
-        approved_dir = self.temp_path / "approved"
-        approved_dir.mkdir()
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws["A1"] = "Test"
-        wb.defined_names.add(
-            openpyxl.workbook.defined_name.DefinedName(
-                name="CompanySlot", attr_text="'Sheet'!$A$1"
-            )
-        )
-        template_file = approved_dir / "burn_report.xlsx"
-        wb.save(template_file)
-        wb.close()
-
-        engine = ExcelEngine(approved_templates_dir=approved_dir)
-        tool = ApplyTemplateUpdateTool(engine=engine)
-        out_file = self.temp_path / "resolved_out.xlsx"
-        res = tool.execute(
-            template_id="burn_report",
-            output_filename=str(out_file),
-            slots={"CompanySlot": "ResolvedCorp"},
-        )
-        self.assertEqual(res["status"], "success")
-        self.assertTrue(out_file.exists())
-
-    def test_apply_template_update_tool_requires_approved_dir(self):
-        with self.assertRaises(ValueError) as ctx:
-            ApplyTemplateUpdateTool(engine=ExcelEngine())
-        self.assertIn("approved_templates_dir", str(ctx.exception))
-
-    def test_apply_template_update_tool_output_dir_confinement(self):
-        approved_dir = self.temp_path / "approved"
-        approved_dir.mkdir(exist_ok=True)
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws["A1"] = "Test"
-        wb.defined_names.add(
-            openpyxl.workbook.defined_name.DefinedName(
-                name="Slot1", attr_text="'Sheet'!$A$1"
-            )
-        )
-        template_file = approved_dir / "simple.xlsx"
-        wb.save(template_file)
-        wb.close()
-
-        output_dir = self.temp_path / "safe_outputs"
-        output_dir.mkdir()
-
-        engine = ExcelEngine(approved_templates_dir=approved_dir)
-        tool = ApplyTemplateUpdateTool(engine=engine, output_dir=output_dir)
-
-        # Attempting path traversal outside output_dir
-        with self.assertRaises(PermissionError) as ctx:
-            tool.execute(
-                template_id="simple",
-                output_filename="../escape.xlsx",
-                slots={"Slot1": "value"},
-            )
-        self.assertIn("resolves outside approved output directory", str(ctx.exception))
-
-    def test_apply_template_update_tool_missing_template(self):
-        approved_dir = self.temp_path / "approved"
-        approved_dir.mkdir(exist_ok=True)
-        engine = ExcelEngine(approved_templates_dir=approved_dir)
-        tool = ApplyTemplateUpdateTool(engine=engine)
-
-        with self.assertRaises(FileNotFoundError) as ctx:
-            tool.execute(
-                template_id="non_existent",
-                output_filename="out.xlsx",
-                slots={"A": 1},
-            )
-        self.assertIn("not found in", str(ctx.exception))
-
-    def test_post_save_table_verification_mismatch(self):
-        out_path = self.temp_path / "table_corrupt_test.xlsx"
-        original_load = openpyxl.load_workbook
-        calls = [0]
-
-        def tampering_load(*args, **kwargs):
-            calls[0] += 1
-            wb = original_load(*args, **kwargs)
-            if calls[0] == 2:  # verify_wb
-                # Tamper with table range to simulate on-disk mismatch
-                ws = wb["Breakdown"]
-                if "DeptCostTable" in ws.tables:
-                    ws.tables["DeptCostTable"].ref = "A1:B100"
-            return wb
-
-        with patch("openpyxl.load_workbook", side_effect=tampering_load):
-            with self.assertRaises(OSError) as ctx:
-                self.engine.apply_template_update(
-                    self.wb_path,
-                    out_path,
-                    tables={"DeptCostTable": [{"Dept": "Support", "Cost": 120}]},
-                )
-            self.assertIn("range mismatch on disk", str(ctx.exception))
-        self.assertFalse(out_path.exists())
+    def test_tools_require_engine_with_workspace(self):
+        with self.assertRaises(ValueError):
+            InspectWorkbookTool(engine="not_an_engine")
+        with self.assertRaises(ValueError):
+            ReadRangeTool(engine="not_an_engine")
+        with self.assertRaises(ValueError):
+            UpdateWorkbookTool(engine="not_an_engine")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@
 
 # Local architecture & briefs (untracked)
 PROJECT_BRIEF.md
+ignore/
 
 # Python caches
 __pycache__/

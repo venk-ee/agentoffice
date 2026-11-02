@@ -20,15 +20,14 @@ class DivisionTool(BaseTool):
         return a / b
 
 
-from agentoffice.agents.agent import BaseAgent
+if __name__ == "__main__":
+    from agentoffice.agents.agent import BaseAgent
 
-agent = BaseAgent(
-    model="gemini-3.5-flash",
-    system_prompt="You are a helpful math assistant. Always use tools for arithmetic.",
-    tools=[DivisionTool()],
-)
+    agent = BaseAgent(
+        model="gemini-3.5-flash",
+        system_prompt="You are a helpful math assistant. Always use tools for arithmetic.",
+        tools=[DivisionTool()],
+    )
 
-
-print(agent.run("What is 100 divided by 4?"))
-
-print(agent.run("What is 100 divided by 0?"))
+    print(agent.run("What is 100 divided by 4?"))
+    print(agent.run("What is 100 divided by 0?"))
