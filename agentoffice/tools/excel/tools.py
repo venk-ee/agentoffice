@@ -1,8 +1,8 @@
 from pathlib import Path
 from typing import Any
 
-from agentoffice.tools.base_tools import BaseTool
-from agentoffice.tools.office.excel_engine import ExcelEngine
+from agentoffice.core.tool import BaseTool
+from agentoffice.tools.excel.engine import ExcelEngine
 
 
 class InspectWorkbookTool(BaseTool):

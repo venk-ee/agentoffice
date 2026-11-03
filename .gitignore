@@ -18,9 +18,11 @@ __pycache__/
 venv/
 ENV/
 
-# Generated output test files
-tests/*output*.xlsx
-test.xlsx
+# Office & spreadsheet binaries / generated files
+*.xlsx
+*.xlsm
+*.xltx
+*.xltm
 outputs/
 
 # IDE & Editor settings

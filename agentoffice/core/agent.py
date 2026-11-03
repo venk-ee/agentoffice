@@ -5,7 +5,7 @@ from abc import ABC
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from agentoffice.tools.base_tools import BaseTool
+from agentoffice.core.tool import BaseTool
 
 load_dotenv()
 

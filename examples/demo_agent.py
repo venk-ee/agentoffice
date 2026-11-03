@@ -1,4 +1,4 @@
-from agentoffice.tools.base_tools import BaseTool
+from agentoffice import BaseTool
 
 
 class DivisionTool(BaseTool):
@@ -21,7 +21,7 @@ class DivisionTool(BaseTool):
 
 
 if __name__ == "__main__":
-    from agentoffice.agents.agent import BaseAgent
+    from agentoffice import BaseAgent
 
     agent = BaseAgent(
         model="gemini-3.5-flash",

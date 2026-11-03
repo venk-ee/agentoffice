@@ -7,12 +7,12 @@ from unittest.mock import patch
 import openpyxl
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
-from agentoffice.tools.office.excel import (
+from agentoffice.tools.excel import (
+    ExcelEngine,
     InspectWorkbookTool,
     ReadRangeTool,
     UpdateWorkbookTool,
 )
-from agentoffice.tools.office.excel_engine import ExcelEngine
 
 
 class TestExcelEngine(unittest.TestCase):
