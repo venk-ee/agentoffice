@@ -8,6 +8,7 @@ from openpyxl.worksheet.table import Table
 
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 from agentoffice.tools.excel.write import (
+    AppendTableHandler,
     SetCellHandler,
     UpdateWorkbookTool,
     update_workbook,
@@ -89,7 +90,12 @@ class TestExcelWrite(unittest.TestCase):
                 self.workspace,
                 "test_data.xlsx",
                 operations=[
-                    {"action": "set_cell", "sheet": "Summary", "cell": "B2", "value": 999}
+                    {
+                        "action": "set_cell",
+                        "sheet": "Summary",
+                        "cell": "B2",
+                        "value": 999,
+                    }
                 ],
             )
 
@@ -104,7 +110,12 @@ class TestExcelWrite(unittest.TestCase):
                 self.workspace,
                 "test_data.xlsx",
                 operations=[
-                    {"action": "set_cell", "sheet": "Summary", "cell": "B1", "value": "=SUM(A1:A10)"}
+                    {
+                        "action": "set_cell",
+                        "sheet": "Summary",
+                        "cell": "B1",
+                        "value": "=SUM(A1:A10)",
+                    }
                 ],
             )
 
@@ -126,7 +137,12 @@ class TestExcelWrite(unittest.TestCase):
                 self.workspace,
                 merged_file,
                 operations=[
-                    {"action": "set_cell", "sheet": "Sheet1", "cell": "B2", "value": "Child"}
+                    {
+                        "action": "set_cell",
+                        "sheet": "Sheet1",
+                        "cell": "B2",
+                        "value": "Child",
+                    }
                 ],
             )
         self.assertIn("merged range", str(ctx.exception))
@@ -138,8 +154,18 @@ class TestExcelWrite(unittest.TestCase):
                 self.workspace,
                 "test_data.xlsx",
                 operations=[
-                    {"action": "set_cell", "sheet": "Summary", "cell": "B1", "value": 10},
-                    {"action": "set_cell", "sheet": "Summary", "cell": "B1", "value": 20},
+                    {
+                        "action": "set_cell",
+                        "sheet": "Summary",
+                        "cell": "B1",
+                        "value": 10,
+                    },
+                    {
+                        "action": "set_cell",
+                        "sheet": "Summary",
+                        "cell": "B1",
+                        "value": 20,
+                    },
                 ],
             )
         self.assertIn("Conflicting update", str(ctx.exception))
@@ -198,7 +224,12 @@ class TestExcelWrite(unittest.TestCase):
                 self.workspace,
                 "test_data.xlsx",
                 operations=[
-                    {"action": "set_cell", "sheet": "Summary", "cell": "B1", "value": 900}
+                    {
+                        "action": "set_cell",
+                        "sheet": "Summary",
+                        "cell": "B1",
+                        "value": 900,
+                    }
                 ],
                 output_filename=out_name,
                 overwrite=False,
@@ -218,13 +249,20 @@ class TestExcelWrite(unittest.TestCase):
 
     def test_disk_verification_failure_handling(self):
         # Simulate a disk verification failure
-        with patch.object(SetCellHandler, "verify", side_effect=OSError("Verification check failed")):
+        with patch.object(
+            SetCellHandler, "verify", side_effect=OSError("Verification check failed")
+        ):
             with self.assertRaises(OSError):
                 update_workbook(
                     self.workspace,
                     "test_data.xlsx",
                     operations=[
-                        {"action": "set_cell", "sheet": "Summary", "cell": "B1", "value": 9999}
+                        {
+                            "action": "set_cell",
+                            "sheet": "Summary",
+                            "cell": "B1",
+                            "value": 9999,
+                        }
                     ],
                 )
 
@@ -343,3 +381,55 @@ class TestExcelWrite(unittest.TestCase):
                 ],
             )
         self.assertIn("must be scalars", str(ctx2.exception))
+
+    def test_append_value_verification_catches_disk_mismatch(self):
+        # Tamper AFTER the real apply so the genuine verify logic has to
+        # catch the corruption on the saved temp file.
+        real_apply = AppendTableHandler.apply
+
+        def corrupted_apply(wb, validated):
+            real_apply(wb, validated)
+            wb["Orders"]["B3"].value = 999999  # simulate silent corruption
+
+        with patch.object(AppendTableHandler, "apply", side_effect=corrupted_apply):
+            with self.assertRaises(OSError) as ctx:
+                update_workbook(
+                    self.workspace,
+                    "test_data.xlsx",
+                    operations=[
+                        {
+                            "action": "append_table",
+                            "table": "OrdersTable",
+                            "rows": [["Mouse", 50]],
+                        }
+                    ],
+                    output_filename="orders_verify_fail.xlsx",
+                )
+        self.assertIn("mismatch on disk", str(ctx.exception))
+
+        # Atomic swap never happened: no output, source untouched, tmp cleaned
+        self.assertFalse((self.workspace_path / "orders_verify_fail.xlsx").exists())
+        with self.workspace.open_workbook("test_data.xlsx") as wb:
+            self.assertIsNone(wb["Orders"]["A3"].value)
+        self.assertEqual(list(self.workspace_path.glob(".tmp_*")), [])
+
+    def test_formulas_survive_successful_update(self):
+        # Round-trip guard: an accepted update must leave unrelated formulas
+        result = update_workbook(
+            self.workspace,
+            "test_data.xlsx",
+            operations=[
+                {"action": "set_cell", "sheet": "Summary", "cell": "B1", "value": 2500},
+                {
+                    "action": "append_table",
+                    "table": "OrdersTable",
+                    "rows": [{"Item": "Mouse", "Price": 50}],
+                },
+            ],
+            output_filename="roundtrip.xlsx",
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook("roundtrip.xlsx") as wb:
+            self.assertEqual(wb["Summary"]["B2"].value, "=B1*0.2")
+            self.assertEqual(wb["Orders"]["A3"].value, "Mouse")

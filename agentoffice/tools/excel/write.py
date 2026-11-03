@@ -1,6 +1,6 @@
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import openpyxl
@@ -216,6 +216,21 @@ class AppendTableHandler:
                 f"Verification failed: table '{t_name}' range mismatch on disk"
             )
 
+        # Verify every appended value landed on disk
+        for r, row_vals in enumerate(validated["rows"]):
+            for c, expected in enumerate(row_vals):
+                coord = (
+                    f"{get_column_letter(validated['min_col'] + c)}"
+                    f"{validated['start_row'] + r}"
+                )
+                saved_val = ws_verify[coord].value
+                if saved_val != expected:
+                    raise OSError(
+                        f"Verification failed: table '{t_name}' cell "
+                        f"'{sheet_name}!{coord}' value mismatch on disk "
+                        f"(expected {expected!r}, got {saved_val!r})"
+                    )
+
 
 OPERATION_HANDLERS = {
     "set_cell": SetCellHandler,
@@ -287,9 +302,7 @@ def update_workbook(
 
     # 4. Post-save verification & 5. Atomic swap
     try:
-        verify_wb = openpyxl.load_workbook(
-            tmp_path, keep_vba=keep_vba, data_only=False
-        )
+        verify_wb = openpyxl.load_workbook(tmp_path, keep_vba=keep_vba, data_only=False)
         try:
             for handler, validated in validated_ops:
                 handler.verify(verify_wb, validated)

@@ -42,28 +42,34 @@ class TestExcelRead(unittest.TestCase):
         self.assertEqual(result["file_name"], "test_data.xlsx")
         self.assertEqual(len(result["ranges"]), 1)
         self.assertEqual(result["ranges"][0]["range"], "A1:B2")
-        self.assertEqual(result["ranges"][0]["values"], [["Revenue", 1000], ["Tax", "=B1*0.2"]])
-    
+        self.assertEqual(
+            result["ranges"][0]["values"], [["Revenue", 1000], ["Tax", "=B1*0.2"]]
+        )
+
     def test_read_ranges_multi_sheet(self):
-        result = read_ranges(self.workspace, "test_data.xlsx", ["Summary!A1:B2", "Orders!A1:B1"])
+        result = read_ranges(
+            self.workspace, "test_data.xlsx", ["Summary!A1:B2", "Orders!A1:B1"]
+        )
         self.assertEqual(len(result["ranges"]), 2)
         self.assertEqual(result["ranges"][0]["range"], "Summary!A1:B2")
         self.assertEqual(result["ranges"][1]["range"], "Orders!A1:B1")
-    
+
     def test_read_ranges_tool_execution(self):
         tool = ReadRangesTool(workspace=self.workspace)
         result = tool.execute("test_data.xlsx", ["A1:B2"])
         self.assertEqual(result["file_name"], "test_data.xlsx")
         self.assertEqual(len(result["ranges"]), 1)
         self.assertEqual(result["ranges"][0]["range"], "A1:B2")
-        self.assertEqual(result["ranges"][0]["values"], [["Revenue", 1000], ["Tax", "=B1*0.2"]])
-    
+        self.assertEqual(
+            result["ranges"][0]["values"], [["Revenue", 1000], ["Tax", "=B1*0.2"]]
+        )
+
     def test_read_ranges_tool_error_handling(self):
         tool = ReadRangesTool(workspace=self.workspace)
         result = tool.execute("nonexistent.xlsx", ["A1:B2"])
         self.assertIn("error", result)
         self.assertIn("FileNotFoundError", result["error"])
-    
+
     def test_read_ranges_tool_max_cells_limit(self):
         tool = ReadRangesTool(workspace=self.workspace)
         result = tool.execute("test_data.xlsx", ["A1:B100000"])

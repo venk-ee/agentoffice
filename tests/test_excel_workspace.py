@@ -1,9 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
-from agentoffice.tools.excel.workspace import ExcelWorkspace
+
 import openpyxl
 
+from agentoffice.tools.excel.workspace import ExcelWorkspace
 
 
 class TestExcelWorkspace(unittest.TestCase):
@@ -42,6 +43,6 @@ class TestExcelWorkspace(unittest.TestCase):
         wb.active["A1"] = "Hello"
         wb.save(test_file)
         wb.close()
-        
+
         with self.workspace.open_workbook(test_file, must_exist=True) as open_wb:
             self.assertEqual(open_wb.active["A1"].value, "Hello")

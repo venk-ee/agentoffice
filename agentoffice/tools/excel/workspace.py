@@ -1,6 +1,7 @@
-from pathlib import Path
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
+from pathlib import Path
+
 import openpyxl
 
 
@@ -8,10 +9,12 @@ class ExcelWorkspace:
     def __init__(self, workspace_dir: str | Path):
         self.workspace_dir = Path(workspace_dir)
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
-        
+
     def resolve_path(self, path: str | Path, must_exist: bool = True) -> Path:
         raw_path = Path(path)
-        candidate = raw_path if raw_path.is_absolute() else (self.workspace_dir / raw_path)
+        candidate = (
+            raw_path if raw_path.is_absolute() else (self.workspace_dir / raw_path)
+        )
         target_path = candidate.resolve()
         if not target_path.is_relative_to(self.workspace_dir):
             raise PermissionError(
