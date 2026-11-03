@@ -1,13 +1,21 @@
 from agentoffice.tools.excel import (
-    ExcelEngine,
+    ExcelWorkspace,
     InspectWorkbookTool,
-    ReadRangeTool,
+    ReadRangesTool,
     UpdateWorkbookTool,
+    create_excel_tools,
+    inspect_workbook,
+    read_ranges,
+    update_workbook,
 )
 
 __all__ = [
-    "ExcelEngine",
+    "ExcelWorkspace",
     "InspectWorkbookTool",
-    "ReadRangeTool",
+    "ReadRangesTool",
     "UpdateWorkbookTool",
+    "create_excel_tools",
+    "inspect_workbook",
+    "read_ranges",
+    "update_workbook",
 ]

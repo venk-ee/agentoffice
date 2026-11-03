@@ -13,9 +13,9 @@ load_dotenv()
 class BaseAgent(ABC):
     def __init__(
         self,
-        model: str = "gemini-3.5-flash",
+        model: str = "gemini-3.5-flash-lite",
         system_prompt: str = "",
-        tools: list[BaseTool] = None,
+        tools: list[BaseTool] | None = None,
     ):
         self.client = OpenAI(
             api_key=os.getenv("GEMINI_API_KEY"),

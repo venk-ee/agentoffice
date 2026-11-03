@@ -24,7 +24,7 @@ if __name__ == "__main__":
     from agentoffice import BaseAgent
 
     agent = BaseAgent(
-        model="gemini-3.5-flash",
+        model="gemini-3.5-flash-lite",
         system_prompt="You are a helpful math assistant. Always use tools for arithmetic.",
         tools=[DivisionTool()],
     )

@@ -1,17 +1,25 @@
 from agentoffice.core.agent import BaseAgent
 from agentoffice.core.tool import BaseTool
-from agentoffice.tools.excel.engine import ExcelEngine
-from agentoffice.tools.excel.tools import (
+from agentoffice.tools.excel import (
+    ExcelWorkspace,
     InspectWorkbookTool,
-    ReadRangeTool,
+    ReadRangesTool,
     UpdateWorkbookTool,
+    create_excel_tools,
+    inspect_workbook,
+    read_ranges,
+    update_workbook,
 )
 
 __all__ = [
     "BaseAgent",
     "BaseTool",
-    "ExcelEngine",
+    "ExcelWorkspace",
     "InspectWorkbookTool",
-    "ReadRangeTool",
+    "ReadRangesTool",
     "UpdateWorkbookTool",
+    "create_excel_tools",
+    "inspect_workbook",
+    "read_ranges",
+    "update_workbook",
 ]

@@ -38,7 +38,7 @@ if __name__ == "__main__":
     )
 
     response = client.chat.completions.create(
-        model="gemini-3.5-flash",
+        model="gemini-3.5-flash-lite",
         # model="gemma-4-31b-it",
         messages=[{"role": "user", "content": "What is 2 + 2? "}],
         tools=tools,
@@ -56,6 +56,6 @@ if __name__ == "__main__":
     ]
 
     final_response = client.chat.completions.create(
-        model="gemini-3.5-flash", messages=messages
+        model="gemini-3.5-flash-lite", messages=messages
     )
     print("Agent Final Answer:", final_response.choices[0].message.content)
