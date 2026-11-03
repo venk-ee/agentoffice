@@ -1,0 +1,72 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+import openpyxl
+
+from agentoffice.tools.excel.read import ReadRangesTool, read_ranges
+from agentoffice.tools.excel.workspace import ExcelWorkspace
+
+
+class TestExcelRead(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace_path = Path(self.temp_dir.name)
+        self.workspace = ExcelWorkspace(workspace_dir=self.workspace_path)
+
+        # Create multi-sheet test workbook
+        self.wb_path = self.workspace_path / "test_data.xlsx"
+        wb = openpyxl.Workbook()
+
+        # Sheet 1: Summary
+        ws1 = wb.active
+        ws1.title = "Summary"
+        ws1["A1"] = "Revenue"
+        ws1["B1"] = 1000
+        ws1["A2"] = "Tax"
+        ws1["B2"] = "=B1*0.2"
+
+        # Sheet 2: Orders
+        ws2 = wb.create_sheet(title="Orders")
+        ws2["A1"] = "Laptop"
+        ws2["B1"] = 5
+
+        wb.save(self.wb_path)
+        wb.close()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_read_ranges_single_sheet(self):
+        result = read_ranges(self.workspace, "test_data.xlsx", ["A1:B2"])
+        self.assertEqual(result["file_name"], "test_data.xlsx")
+        self.assertEqual(len(result["ranges"]), 1)
+        self.assertEqual(result["ranges"][0]["range"], "A1:B2")
+        self.assertEqual(result["ranges"][0]["values"], [["Revenue", 1000], ["Tax", "=B1*0.2"]])
+    
+    def test_read_ranges_multi_sheet(self):
+        result = read_ranges(self.workspace, "test_data.xlsx", ["Summary!A1:B2", "Orders!A1:B1"])
+        self.assertEqual(len(result["ranges"]), 2)
+        self.assertEqual(result["ranges"][0]["range"], "Summary!A1:B2")
+        self.assertEqual(result["ranges"][1]["range"], "Orders!A1:B1")
+    
+    def test_read_ranges_tool_execution(self):
+        tool = ReadRangesTool(workspace=self.workspace)
+        result = tool.execute("test_data.xlsx", ["A1:B2"])
+        self.assertEqual(result["file_name"], "test_data.xlsx")
+        self.assertEqual(len(result["ranges"]), 1)
+        self.assertEqual(result["ranges"][0]["range"], "A1:B2")
+        self.assertEqual(result["ranges"][0]["values"], [["Revenue", 1000], ["Tax", "=B1*0.2"]])
+    
+    def test_read_ranges_tool_error_handling(self):
+        tool = ReadRangesTool(workspace=self.workspace)
+        result = tool.execute("nonexistent.xlsx", ["A1:B2"])
+        self.assertIn("error", result)
+        self.assertIn("FileNotFoundError", result["error"])
+    
+    def test_read_ranges_tool_max_cells_limit(self):
+        tool = ReadRangesTool(workspace=self.workspace)
+        result = tool.execute("test_data.xlsx", ["A1:B100000"])
+        self.assertIn("error", result)
+        self.assertIn("ValueError", result["error"])
+        self.assertIn("exceeding the safety ceiling", result["error"])
