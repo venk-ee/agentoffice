@@ -8,6 +8,7 @@ from openpyxl.worksheet.table import Table
 
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 from agentoffice.tools.excel.write import (
+    OPERATION_HANDLERS,
     AppendTableHandler,
     SetCellHandler,
     UpdateWorkbookTool,
@@ -433,3 +434,56 @@ class TestExcelWrite(unittest.TestCase):
         with self.workspace.open_workbook("roundtrip.xlsx") as wb:
             self.assertEqual(wb["Summary"]["B2"].value, "=B1*0.2")
             self.assertEqual(wb["Orders"]["A3"].value, "Mouse")
+
+    def test_canonical_operation_names(self):
+        # Aliases (append_rows, mutations) were removed: exactly two
+        # canonical actions exist.
+        self.assertEqual(set(OPERATION_HANDLERS.keys()), {"set_cell", "append_table"})
+
+    def test_unknown_action_rejected_with_supported_list(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[{"action": "delete_sheet", "sheet": "Summary"}],
+            )
+        self.assertIn("Unsupported operation action", str(ctx.exception))
+        self.assertIn("set_cell", str(ctx.exception))
+        self.assertIn("append_table", str(ctx.exception))
+
+    def test_missing_required_key_rejected(self):
+        # Regression: a missing 'rows' key previously defaulted to [] and the
+        # batch silently succeeded as a no-op.
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[{"action": "append_table", "table": "OrdersTable"}],
+            )
+        self.assertIn("missing: ['rows']", str(ctx.exception))
+
+    def test_typo_key_rejected_with_suggestion(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "append_table",
+                        "table": "OrdersTable",
+                        "row": [["Mouse", 50]],
+                    }
+                ],
+            )
+        self.assertIn("did you mean 'rows'", str(ctx.exception))
+
+    def test_empty_rows_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {"action": "append_table", "table": "OrdersTable", "rows": []}
+                ],
+            )
+        self.assertIn("non-empty", str(ctx.exception))

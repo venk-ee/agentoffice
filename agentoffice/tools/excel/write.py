@@ -1,3 +1,4 @@
+from difflib import get_close_matches
 import os
 import tempfile
 from pathlib import Path
@@ -32,15 +33,15 @@ class ConflictTracker:
 
 
 class SetCellHandler:
+    REQUIRED_KEYS = frozenset({"cell", "value"})
+    OPTIONAL_KEYS = frozenset({"sheet"})
+
     @staticmethod
     def validate(
         wb: openpyxl.Workbook,
         operation: dict[str, Any],
         tracker: ConflictTracker,
     ) -> dict[str, Any]:
-
-        if "cell" not in operation or "value" not in operation:
-            raise ValueError("Operation must contain 'cell' and 'value' keys")
 
         value = operation["value"]
         guard_not_formula_injection(value, f"Value at cell {operation['cell']}")
@@ -85,6 +86,9 @@ class SetCellHandler:
 
 
 class AppendTableHandler:
+    REQUIRED_KEYS = frozenset({"table", "rows"})
+    OPTIONAL_KEYS = frozenset()
+
     @staticmethod
     def validate(
         wb: openpyxl.Workbook,
@@ -92,8 +96,16 @@ class AppendTableHandler:
         tracker: ConflictTracker,
     ) -> dict[str, Any]:
 
-        t_name = operation.get("table")
-        rows = operation.get("rows", [])
+        t_name = operation["table"]
+        rows = operation["rows"]
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"append_table 'rows' must be a list, got {type(rows).__name__}."
+            )
+        if not rows:
+            raise ValueError(
+                "append_table 'rows' must be a non-empty list of row values."
+            )
 
         # 1. Find the table's sheet
         ws = next((s for s in wb.worksheets if t_name in s.tables), None)
@@ -235,7 +247,6 @@ class AppendTableHandler:
 OPERATION_HANDLERS = {
     "set_cell": SetCellHandler,
     "append_table": AppendTableHandler,
-    "append_rows": AppendTableHandler,
 }
 
 
@@ -245,7 +256,6 @@ def update_workbook(
     operations: list[dict[str, Any]] | None = None,
     output_filename: str | Path | None = None,
     overwrite: bool = False,
-    mutations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Applies an atomic batch of ordered operations to an Excel workbook."""
     src_path = workspace.resolve_path(file_name, must_exist=True)
@@ -262,7 +272,7 @@ def update_workbook(
         dest_path = src_path
         is_inplace = True
 
-    ops = operations if operations is not None else (mutations or [])
+    ops = operations or []
     if not ops:
         raise ValueError("No operations provided.")
 
@@ -282,6 +292,33 @@ def update_workbook(
                     f"Unsupported operation action: '{action}'. Supported actions: {list(OPERATION_HANDLERS.keys())}"
                 )
             handler = OPERATION_HANDLERS[action]
+
+            # Strict envelope: no unknown keys, required keys present.
+            # Unknown keys are checked first because a typo'd required key
+            # appears as both unknown and missing, and the suggestion is the
+            # more actionable error. Happy-path cost is two set operations
+            # per op; the difflib search below only runs on failures.
+            keys = op.keys() - {"action"}
+            unknown = keys - handler.REQUIRED_KEYS - handler.OPTIONAL_KEYS
+            if unknown:
+                allowed = sorted(handler.REQUIRED_KEYS | handler.OPTIONAL_KEYS)
+                hints = []
+                for bad in sorted(unknown):
+                    close = get_close_matches(bad, allowed, n=1)
+                    hints.append(
+                        f"'{bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
+                    )
+                raise ValueError(
+                    f"Unknown key(s) {', '.join(hints)} for '{action}'. "
+                    f"Allowed keys: {allowed}"
+                )
+            missing = handler.REQUIRED_KEYS - keys
+            if missing:
+                raise ValueError(
+                    f"'{action}' requires key(s) {sorted(handler.REQUIRED_KEYS)}, "
+                    f"missing: {sorted(missing)}"
+                )
+
             validated = handler.validate(wb, op, tracker)
             validated_ops.append((handler, validated))
 
@@ -350,7 +387,7 @@ class UpdateWorkbookTool(BaseTool):
                     },
                     "operations": {
                         "type": "array",
-                        "items": {"type": "object"},
+                        "items": {"type": "object", "required": ["action"]},
                         "description": "List of operations to apply.",
                     },
                     "overwrite": {
@@ -369,14 +406,13 @@ class UpdateWorkbookTool(BaseTool):
         operations: list[dict[str, Any]] | None = None,
         output_filename: str | None = None,
         overwrite: bool = False,
-        **kwargs: Any,
     ) -> dict[str, Any]:
         if not file_name:
             return {
                 "status": "error",
                 "error": "ValueError: Parameter 'file_name' is required.",
             }
-        ops = operations or kwargs.get("mutations")
+        ops = operations
         if not ops:
             return {
                 "status": "error",
