@@ -268,3 +268,78 @@ class TestExcelWrite(unittest.TestCase):
         )
         self.assertEqual(res["status"], "error")
         self.assertIn("PermissionError", res["error"])
+
+    def test_table_append_dict_rows_map_by_header(self):
+        # Regression: dict rows must write VALUES mapped by column name,
+        # never the dict keys, and key order must not matter.
+        result = update_workbook(
+            self.workspace,
+            "test_data.xlsx",
+            operations=[
+                {
+                    "action": "append_table",
+                    "table": "OrdersTable",
+                    "rows": [
+                        {"Item": "Mouse", "Price": 50},
+                        {"Price": 80, "Item": "Keyboard"},
+                    ],
+                }
+            ],
+            output_filename="orders_dict_rows.xlsx",
+        )
+
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook("orders_dict_rows.xlsx") as wb:
+            ws = wb["Orders"]
+            self.assertEqual(ws["A3"].value, "Mouse")
+            self.assertEqual(ws["B3"].value, 50)
+            self.assertEqual(ws["A4"].value, "Keyboard")
+            self.assertEqual(ws["B4"].value, 80)
+
+    def test_table_append_dict_row_unknown_column_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "append_table",
+                        "table": "OrdersTable",
+                        "rows": [{"Item": "Mouse", "Cost": 50}],
+                    }
+                ],
+            )
+        self.assertIn("no column", str(ctx.exception))
+
+        # Rejected batch must leave the source workbook untouched
+        with self.workspace.open_workbook("test_data.xlsx") as wb:
+            self.assertIsNone(wb["Orders"]["A3"].value)
+
+    def test_table_append_rejects_invalid_row_shapes(self):
+        # Regression: a bare string with len == column count previously passed
+        # the width check and wrote its characters as cell values.
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {"action": "append_table", "table": "OrdersTable", "rows": ["ab"]}
+                ],
+            )
+        self.assertIn("rows must be lists", str(ctx.exception))
+
+        # Non-scalar values (nested containers) are rejected up front
+        with self.assertRaises(ValueError) as ctx2:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "append_table",
+                        "table": "OrdersTable",
+                        "rows": [{"Item": ["Mouse"], "Price": 50}],
+                    }
+                ],
+            )
+        self.assertIn("must be scalars", str(ctx2.exception))

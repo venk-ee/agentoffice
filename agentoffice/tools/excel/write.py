@@ -104,19 +104,44 @@ class AppendTableHandler:
             ws, f"Sheet '{ws.title}' containing table '{t_name}' is protected."
         )
 
-        # 2. Parse table boundaries
+        # 2. Parse table boundaries & read the header row
         tbl = ws.tables[t_name]
         min_col, min_row, max_col, max_row = range_boundaries(tbl.ref)
         expected_cols = max_col - min_col + 1
+        headers = [
+            ws.cell(row=min_row, column=c).value for c in range(min_col, max_col + 1)
+        ]
 
-        # 3. Validate row shapes & formula injection
+        # 3. Validate row shapes, normalize to header order, & check values
+        normalized_rows = []
         for row in rows:
-            if len(row) != expected_cols:
+            if isinstance(row, dict):
+                unknown = set(row) - set(headers)
+                if unknown:
+                    raise ValueError(
+                        f"Table '{t_name}' has no column(s) {sorted(unknown)}. "
+                        f"Expected columns: {headers}"
+                    )
+                row_vals = [row.get(h) for h in headers]
+            elif isinstance(row, (list, tuple)):
+                if len(row) != expected_cols:
+                    raise ValueError(
+                        f"Table '{t_name}' expects {expected_cols} columns, got {len(row)}."
+                    )
+                row_vals = list(row)
+            else:
                 raise ValueError(
-                    f"Table '{t_name}' expects {expected_cols} columns, got {len(row)}."
+                    f"Table '{t_name}' rows must be lists of values or dicts "
+                    f"keyed by column names {headers}."
                 )
-            for val in row:
+            for val in row_vals:
+                if not (val is None or isinstance(val, (str, int, float, bool))):
+                    raise ValueError(
+                        f"Table '{t_name}' row values must be scalars "
+                        f"(string, number, boolean, or null), got {type(val).__name__}."
+                    )
                 guard_not_formula_injection(val, f"table '{t_name}' row value")
+            normalized_rows.append(row_vals)
 
         # 4. Register landing zone with tracker & check cells are empty
         start_row = max_row + 1
@@ -133,7 +158,7 @@ class AppendTableHandler:
             "sheet": ws.title,
             "min_col": min_col,
             "start_row": start_row,
-            "rows": rows,
+            "rows": normalized_rows,
             "new_ref": new_ref,
         }
 
@@ -293,7 +318,9 @@ class UpdateWorkbookTool(BaseTool):
             description=(
                 "Apply an atomic batch of ordered operations to an Excel workbook. "
                 "Supported actions: 'set_cell' (keys: sheet, cell, value), "
-                "'append_table' (keys: table, rows). "
+                "'append_table' (keys: table, rows; each row is a dict keyed by the "
+                "table's column names, e.g. {'Item': 'Mouse', 'Price': 50}, preferred, "
+                "or a list of scalar values in column order). "
                 "Strictly preserves formulas. If output_filename is omitted, "
                 "updates the workbook in-place safely."
             ),
