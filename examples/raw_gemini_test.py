@@ -1,11 +1,10 @@
+import json
 import os
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv()
-
-import json
 
 
 def add_numbers(a: int, b: int) -> int:

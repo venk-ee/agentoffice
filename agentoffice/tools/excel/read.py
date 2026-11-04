@@ -40,7 +40,11 @@ def _extract_values_from_target(target: Any) -> list[list[Any]]:
         return []
     if isinstance(target[0], tuple):
         return [[cell.value for cell in row] for row in target]
-    if len(target) > 1 and hasattr(target[0], "column") and hasattr(target[1], "column"):
+    if (
+        len(target) > 1
+        and hasattr(target[0], "column")
+        and hasattr(target[1], "column")
+    ):
         if target[0].column == target[1].column:
             return [[cell.value] for cell in target]
     return [[cell.value for cell in target]]

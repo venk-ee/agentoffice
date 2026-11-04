@@ -200,8 +200,7 @@ class AppendTableHandler:
                         f"Expected columns: {headers}"
                     )
                 row_vals = [
-                    row[h] if h in row else str_row.get(str(h))
-                    for h in headers
+                    row[h] if h in row else str_row.get(str(h)) for h in headers
                 ]
             elif isinstance(row, (list, tuple)):
                 if len(row) != expected_cols:
@@ -360,8 +359,7 @@ def _validate_operation_envelope(
                 f"'{str_bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
             )
         raise ValueError(
-            f"Unknown key(s) {', '.join(hints)} for '{action}'. "
-            f"Allowed keys: {allowed}"
+            f"Unknown key(s) {', '.join(hints)} for '{action}'. Allowed keys: {allowed}"
         )
 
     missing = handler.REQUIRED_KEYS - keys

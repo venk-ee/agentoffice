@@ -21,10 +21,14 @@ select = [
     "I",   # isort (automatically sort imports)
     "UP",  # pyupgrade (modern Python syntax)
 ]
+ignore = [
+    "E501",  # line-too-long (handled automatically by ruff format)
+]
 
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "ruff>=0.17.3",
 ]
 
 [tool.pytest.ini_options]

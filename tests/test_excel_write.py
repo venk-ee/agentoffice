@@ -12,7 +12,6 @@ from agentoffice.tools.excel.write import (
     OPERATION_HANDLERS,
     AppendTableHandler,
     SetCellHandler,
-    SetSlotHandler,
     UpdateWorkbookTool,
     update_workbook,
 )
@@ -612,7 +611,9 @@ class TestExcelWrite(unittest.TestCase):
             update_workbook(
                 self.workspace,
                 "test_data.xlsx",
-                operations=[{"action": "set_slot", "name": "NonExistentSlot", "value": 100}],
+                operations=[
+                    {"action": "set_slot", "name": "NonExistentSlot", "value": 100}
+                ],
             )
         self.assertIn("Named slot 'NonExistentSlot' not found", str(ctx.exception))
 
@@ -684,7 +685,12 @@ class TestExcelWrite(unittest.TestCase):
                 self.workspace,
                 slot_wb_file,
                 operations=[
-                    {"action": "set_cell", "sheet": "Settings", "cell": "C5", "value": 20},
+                    {
+                        "action": "set_cell",
+                        "sheet": "Settings",
+                        "cell": "C5",
+                        "value": 20,
+                    },
                     {"action": "set_slot", "name": "Threshold", "value": 30},
                 ],
             )
@@ -726,6 +732,12 @@ class TestExcelWrite(unittest.TestCase):
             update_workbook(
                 self.workspace,
                 slot_wb_file,
-                operations=[{"action": "set_slot", "name": "TargetSlot", "value": "+cmd|' /C calc'!A0"}],
+                operations=[
+                    {
+                        "action": "set_slot",
+                        "name": "TargetSlot",
+                        "value": "+cmd|' /C calc'!A0",
+                    }
+                ],
             )
         self.assertIn("Formula injection prohibited", str(ctx.exception))
