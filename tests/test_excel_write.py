@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import openpyxl
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table
 
 from agentoffice.tools.excel.workspace import ExcelWorkspace
@@ -11,6 +12,7 @@ from agentoffice.tools.excel.write import (
     OPERATION_HANDLERS,
     AppendTableHandler,
     SetCellHandler,
+    SetSlotHandler,
     UpdateWorkbookTool,
     update_workbook,
 )
@@ -580,3 +582,150 @@ class TestExcelWrite(unittest.TestCase):
                 ],
             )
         self.assertIn("Unknown key(s) '999'", str(ctx.exception))
+
+    def test_set_slot_success(self):
+        # Create workbook with a single-cell defined name
+        slot_wb_file = "slot_test.xlsx"
+        slot_wb_path = self.workspace_path / slot_wb_file
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 0.10
+        defn = DefinedName("TaxRate", attr_text="Config!$B$2")
+        wb.defined_names.add(defn)
+        wb.save(slot_wb_path)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            slot_wb_file,
+            operations=[{"action": "set_slot", "name": "TaxRate", "value": 0.25}],
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["operations_applied"], 1)
+
+        with self.workspace.open_workbook(slot_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["Config"]["B2"].value, 0.25)
+
+    def test_set_slot_missing_name_raises_key_error(self):
+        with self.assertRaises(KeyError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[{"action": "set_slot", "name": "NonExistentSlot", "value": 100}],
+            )
+        self.assertIn("Named slot 'NonExistentSlot' not found", str(ctx.exception))
+
+    def test_set_slot_constant_or_formula_raises_value_error(self):
+        const_wb_file = "const_slot.xlsx"
+        wb = openpyxl.Workbook()
+        defn = DefinedName("ConstSlot", attr_text="0.25")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / const_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                const_wb_file,
+                operations=[{"action": "set_slot", "name": "ConstSlot", "value": 0.30}],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+
+    def test_set_slot_multi_cell_raises_value_error(self):
+        multi_wb_file = "multi_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        defn = DefinedName("MatrixSlot", attr_text="Data!$A$1:$B$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / multi_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                multi_wb_file,
+                operations=[{"action": "set_slot", "name": "MatrixSlot", "value": 42}],
+            )
+        self.assertIn("spans multiple cells", str(ctx.exception))
+
+    def test_set_slot_whole_column_range_rejected(self):
+        col_wb_file = "col_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        defn = DefinedName("ColSlot", attr_text="Data!A:A")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / col_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                col_wb_file,
+                operations=[{"action": "set_slot", "name": "ColSlot", "value": 42}],
+            )
+        self.assertIn("spans multiple cells", str(ctx.exception))
+
+    def test_set_slot_collision_with_set_cell_caught_by_tracker(self):
+        slot_wb_file = "collision_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Settings"
+        ws["C5"] = 10
+        defn = DefinedName("Threshold", attr_text="Settings!$C$5")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[
+                    {"action": "set_cell", "sheet": "Settings", "cell": "C5", "value": 20},
+                    {"action": "set_slot", "name": "Threshold", "value": 30},
+                ],
+            )
+        self.assertIn("Conflicting update", str(ctx.exception))
+        self.assertIn("Settings!C5", str(ctx.exception))
+
+    def test_set_slot_formula_overwrite_protection(self):
+        formula_wb_file = "formula_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Math"
+        ws["A1"] = 10
+        ws["A2"] = "=A1*2"
+        defn = DefinedName("Doubled", attr_text="Math!$A$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / formula_wb_file)
+        wb.close()
+
+        with self.assertRaises(PermissionError) as ctx:
+            update_workbook(
+                self.workspace,
+                formula_wb_file,
+                operations=[{"action": "set_slot", "name": "Doubled", "value": 99}],
+            )
+        self.assertIn("contains formula", str(ctx.exception))
+
+    def test_set_slot_formula_injection_protection(self):
+        slot_wb_file = "inject_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Main"
+        ws["B2"] = 1
+        defn = DefinedName("TargetSlot", attr_text="Main!$B$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(PermissionError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[{"action": "set_slot", "name": "TargetSlot", "value": "+cmd|' /C calc'!A0"}],
+            )
+        self.assertIn("Formula injection prohibited", str(ctx.exception))

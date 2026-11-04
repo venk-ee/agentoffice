@@ -85,6 +85,65 @@ class SetCellHandler:
             )
 
 
+class SetSlotHandler:
+    REQUIRED_KEYS = frozenset({"name", "value"})
+    OPTIONAL_KEYS = frozenset()
+
+    @staticmethod
+    def validate(
+        wb: openpyxl.Workbook,
+        operation: dict[str, Any],
+        tracker: ConflictTracker,
+    ) -> dict[str, Any]:
+        name = operation["name"]
+        value = operation["value"]
+
+        defn = wb.defined_names.get(name)
+        if defn is None:
+            raise KeyError(f"Named slot '{name}' not found in workbook.")
+
+        dests = list(defn.destinations)
+        if not dests:
+            raise ValueError(
+                f"Named slot '{name}' does not resolve to a worksheet grid cell "
+                f"(defined as constant/formula: '{defn.attr_text}'). Slot updates only apply to grid-backed cells."
+            )
+        if len(dests) > 1:
+            raise ValueError(f"Named slot '{name}' points to multiple destinations.")
+
+        sheet_title, cell_coord = dests[0]
+        sheet_name = (sheet_title.strip("'") if sheet_title else None) or (
+            wb.active.title if wb.active else None
+        )
+        if not sheet_name:
+            raise ValueError(
+                f"Named slot '{name}' destination worksheet could not be determined."
+            )
+
+        clean_c = clean_coord(cell_coord)
+        min_col, min_row, max_col, max_row = range_boundaries(clean_c)
+        is_single_cell = (
+            None not in (min_col, min_row, max_col, max_row)
+            and min_col == max_col
+            and min_row == max_row
+        )
+        if not is_single_cell:
+            raise ValueError(
+                f"Named slot '{name}' spans multiple cells ({clean_c}); "
+                f"scalar slot updates require a single cell."
+            )
+
+        # Delegate to SetCellHandler for protection, collision tracking, formula checks
+        return SetCellHandler.validate(
+            wb,
+            {"sheet": sheet_name, "cell": clean_c, "value": value},
+            tracker,
+        )
+
+    apply = SetCellHandler.apply
+    verify = SetCellHandler.verify
+
+
 class AppendTableHandler:
     REQUIRED_KEYS = frozenset({"table", "rows"})
     OPTIONAL_KEYS = frozenset()
@@ -256,6 +315,7 @@ class AppendTableHandler:
 OPERATION_HANDLERS = {
     "set_cell": SetCellHandler,
     "append_table": AppendTableHandler,
+    "set_slot": SetSlotHandler,
 }
 
 
@@ -401,6 +461,7 @@ class UpdateWorkbookTool(BaseTool):
             description=(
                 "Apply an atomic batch of ordered operations to an Excel workbook. "
                 "Supported actions: 'set_cell' (keys: sheet, cell, value), "
+                "'set_slot' (keys: name, value; updates a single-cell defined name), "
                 "'append_table' (keys: table, rows; each row is a dict keyed by the "
                 "table's column names, e.g. {'Item': 'Mouse', 'Price': 50}, preferred, "
                 "or a list of scalar values in column order). "

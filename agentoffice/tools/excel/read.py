@@ -1,10 +1,49 @@
 from pathlib import Path
 from typing import Any
 
+from openpyxl.utils.cell import range_boundaries
+from openpyxl.worksheet.worksheet import Worksheet
+
 from agentoffice.core.tool import BaseTool
+from agentoffice.tools.excel.guards import format_limit_exceeded_error
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 
 DEFAULT_MAX_CELLS: int = 1000
+
+
+def _resolve_sheet_and_coords(
+    workbook: Any, range_str: str, file_name: str | Path
+) -> tuple[Worksheet, str]:
+    """Resolve worksheet and coordinate string from 'Sheet!A1' or 'A1'."""
+    if "!" in range_str:
+        sheet_name, coords = range_str.split("!", 1)
+        clean_sheet = sheet_name.strip("'")
+        if clean_sheet not in workbook.sheetnames:
+            raise KeyError(f"Sheet '{sheet_name}' not found in workbook '{file_name}'")
+        return workbook[clean_sheet], coords
+    return workbook.active, range_str
+
+
+def _count_range_cells(ws: Worksheet, coords: str) -> int:
+    """Calculate total cells in coordinates."""
+    min_col, min_row, max_col, max_row = range_boundaries(coords)
+    cols = (max_col or ws.max_column or 1) - (min_col or 1) + 1
+    rows = (max_row or ws.max_row or 1) - (min_row or 1) + 1
+    return max(0, cols) * max(0, rows)
+
+
+def _extract_values_from_target(target: Any) -> list[list[Any]]:
+    """Extract 2D list of cell values handling Cell, 2D tuple, and 1D tuple."""
+    if not isinstance(target, tuple):
+        return [[target.value]]
+    if not target:
+        return []
+    if isinstance(target[0], tuple):
+        return [[cell.value for cell in row] for row in target]
+    if len(target) > 1 and hasattr(target[0], "column") and hasattr(target[1], "column"):
+        if target[0].column == target[1].column:
+            return [[cell.value] for cell in target]
+    return [[cell.value for cell in target]]
 
 
 def read_ranges(
@@ -16,35 +55,19 @@ def read_ranges(
 ) -> dict[str, Any]:
     """Reads one or more A1 ranges from a workbook in a single
     atomic turn."""
-    value_ranges = []
-    total_cells = 0
     with workspace.open_workbook(file_name, data_only=data_only) as workbook:
-        for range_str in ranges:
-            if "!" in range_str:
-                sheet_name, coords = range_str.split("!", 1)
-                if sheet_name not in workbook.sheetnames:
-                    raise KeyError(
-                        f"Sheet '{sheet_name}' not found in workbook '{file_name}'"
-                    )
-                ws = workbook[sheet_name]
-            else:
-                ws = workbook.active
-                coords = range_str
-
-            target = ws[coords]
-            if isinstance(target, tuple):
-                values = [[cell.value for cell in row] for row in target]
-                total_cells += sum(len(row) for row in values)
-            else:
-                values = [[target.value]]
-                total_cells += 1
-            value_ranges.append({"range": range_str, "values": values})
-
+        total_cells = sum(
+            _count_range_cells(*_resolve_sheet_and_coords(workbook, r, file_name))
+            for r in ranges
+        )
         if total_cells > max_cells:
-            raise ValueError(
-                f"Requested ranges contain {total_cells} cells, exceeding "
-                f"the safety ceiling of {max_cells}."
-            )
+            raise ValueError(format_limit_exceeded_error(total_cells, max_cells))
+
+        value_ranges = []
+        for range_str in ranges:
+            ws, coords = _resolve_sheet_and_coords(workbook, range_str, file_name)
+            values = _extract_values_from_target(ws[coords])
+            value_ranges.append({"range": range_str, "values": values})
 
         return {"file_name": str(file_name), "ranges": value_ranges}
 
