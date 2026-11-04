@@ -1,6 +1,6 @@
-from difflib import get_close_matches
 import os
 import tempfile
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -123,18 +123,27 @@ class AppendTableHandler:
         headers = [
             ws.cell(row=min_row, column=c).value for c in range(min_col, max_col + 1)
         ]
+        header_str_set = {str(h) for h in headers if h is not None}
 
         # 3. Validate row shapes, normalize to header order, & check values
         normalized_rows = []
         for row in rows:
             if isinstance(row, dict):
-                unknown = set(row) - set(headers)
+                if not row:
+                    raise ValueError(
+                        f"Table '{t_name}' row dictionary cannot be empty."
+                    )
+                str_row = {str(k): v for k, v in row.items()}
+                unknown = [k for k in row if str(k) not in header_str_set]
                 if unknown:
                     raise ValueError(
-                        f"Table '{t_name}' has no column(s) {sorted(unknown)}. "
+                        f"Table '{t_name}' has no column(s) {sorted(unknown, key=str)}. "
                         f"Expected columns: {headers}"
                     )
-                row_vals = [row.get(h) for h in headers]
+                row_vals = [
+                    row[h] if h in row else str_row.get(str(h))
+                    for h in headers
+                ]
             elif isinstance(row, (list, tuple)):
                 if len(row) != expected_cols:
                     raise ValueError(
@@ -303,10 +312,11 @@ def update_workbook(
             if unknown:
                 allowed = sorted(handler.REQUIRED_KEYS | handler.OPTIONAL_KEYS)
                 hints = []
-                for bad in sorted(unknown):
-                    close = get_close_matches(bad, allowed, n=1)
+                for bad in sorted(unknown, key=str):
+                    str_bad = str(bad)
+                    close = get_close_matches(str_bad, allowed, n=1)
                     hints.append(
-                        f"'{bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
+                        f"'{str_bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
                     )
                 raise ValueError(
                     f"Unknown key(s) {', '.join(hints)} for '{action}'. "

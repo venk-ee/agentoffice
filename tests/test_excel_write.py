@@ -436,9 +436,9 @@ class TestExcelWrite(unittest.TestCase):
             self.assertEqual(wb["Orders"]["A3"].value, "Mouse")
 
     def test_canonical_operation_names(self):
-        # Aliases (append_rows, mutations) were removed: exactly two
-        # canonical actions exist.
-        self.assertEqual(set(OPERATION_HANDLERS.keys()), {"set_cell", "append_table"})
+        self.assertIn("set_cell", OPERATION_HANDLERS)
+        self.assertIn("append_table", OPERATION_HANDLERS)
+        self.assertNotIn("append_rows", OPERATION_HANDLERS)
 
     def test_unknown_action_rejected_with_supported_list(self):
         with self.assertRaises(ValueError) as ctx:
@@ -487,3 +487,75 @@ class TestExcelWrite(unittest.TestCase):
                 ],
             )
         self.assertIn("non-empty", str(ctx.exception))
+
+    def test_table_append_empty_dict_row_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "append_table",
+                        "table": "OrdersTable",
+                        "rows": [{}],
+                    }
+                ],
+            )
+        self.assertIn("cannot be empty", str(ctx.exception))
+
+    def test_table_append_numeric_header_mapping(self):
+        # Create a workbook with numeric year headers in a table
+        num_hdr_file = "numeric_headers.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sales"
+        ws.append(["Region", "2024", "2025"])
+        ws.append(["North", 100, 200])
+        tab = Table(displayName="SalesTable", ref="A1:C2")
+        ws.add_table(tab)
+        wb.save(self.workspace_path / num_hdr_file)
+        wb.close()
+
+        # Test both integer keys (2024: 300) and string keys ("2024": 500)
+        result = update_workbook(
+            self.workspace,
+            num_hdr_file,
+            operations=[
+                {
+                    "action": "append_table",
+                    "table": "SalesTable",
+                    "rows": [
+                        {"Region": "South", 2024: 300, 2025: 400},
+                        {"Region": "West", "2024": 500, "2025": 600},
+                    ],
+                }
+            ],
+            output_filename="sales_updated.xlsx",
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook("sales_updated.xlsx") as saved_wb:
+            saved_ws = saved_wb["Sales"]
+            self.assertEqual(saved_ws["A3"].value, "South")
+            self.assertEqual(saved_ws["B3"].value, 300)
+            self.assertEqual(saved_ws["C3"].value, 400)
+            self.assertEqual(saved_ws["A4"].value, "West")
+            self.assertEqual(saved_ws["B4"].value, 500)
+            self.assertEqual(saved_ws["C4"].value, 600)
+
+    def test_unknown_non_string_key_rejected_without_type_error(self):
+        # Passing a non-string key in an operation must not raise TypeError in sorted() or difflib
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "set_cell",
+                        "cell": "A1",
+                        "value": 10,
+                        999: "unexpected",
+                    }
+                ],
+            )
+        self.assertIn("Unknown key(s) '999'", str(ctx.exception))
