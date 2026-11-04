@@ -259,6 +259,89 @@ OPERATION_HANDLERS = {
 }
 
 
+def _resolve_dest_path(
+    workspace: ExcelWorkspace,
+    file_name: str | Path,
+    output_filename: str | Path | None,
+    overwrite: bool,
+) -> tuple[Path, Path, str]:
+    """Resolves source and destination paths, validating the overwrite policy."""
+    src_path = workspace.resolve_path(file_name, must_exist=True)
+
+    if output_filename and str(output_filename) != str(file_name):
+        dest_path = workspace.resolve_path(output_filename, must_exist=False)
+        if dest_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Destination file '{output_filename}' already exists and overwrite=False."
+            )
+        output_name = str(output_filename)
+    else:
+        dest_path = src_path
+        output_name = src_path.name
+
+    return src_path, dest_path, output_name
+
+
+def _validate_operation_envelope(
+    op: dict[str, Any],
+    handler: Any,
+    action: str,
+) -> None:
+    """Validates that required keys are present and no unknown keys were passed."""
+    keys = op.keys() - {"action"}
+    unknown = keys - handler.REQUIRED_KEYS - handler.OPTIONAL_KEYS
+    if unknown:
+        allowed = sorted(handler.REQUIRED_KEYS | handler.OPTIONAL_KEYS)
+        hints = []
+        for bad in sorted(unknown, key=str):
+            str_bad = str(bad)
+            close = get_close_matches(str_bad, allowed, n=1)
+            hints.append(
+                f"'{str_bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
+            )
+        raise ValueError(
+            f"Unknown key(s) {', '.join(hints)} for '{action}'. "
+            f"Allowed keys: {allowed}"
+        )
+
+    missing = handler.REQUIRED_KEYS - keys
+    if missing:
+        raise ValueError(
+            f"'{action}' requires key(s) {sorted(handler.REQUIRED_KEYS)}, "
+            f"missing: {sorted(missing)}"
+        )
+
+
+def _atomic_commit(
+    wb: openpyxl.Workbook,
+    dest_path: Path,
+    validated_ops: list[tuple[Any, dict[str, Any]]],
+    keep_vba: bool,
+) -> None:
+    """Saves workbook to a temp file, verifies on disk, and atomically replaces dest_path."""
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        dir=dest_path.parent, prefix=".tmp_", suffix=dest_path.suffix
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_path_str)
+
+    try:
+        wb.save(tmp_path)
+
+        verify_wb = openpyxl.load_workbook(tmp_path, keep_vba=keep_vba, data_only=False)
+        try:
+            for handler, validated in validated_ops:
+                handler.verify(verify_wb, validated)
+        finally:
+            verify_wb.close()
+
+        os.replace(tmp_path, dest_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
 def update_workbook(
     workspace: ExcelWorkspace,
     file_name: str | Path,
@@ -267,19 +350,9 @@ def update_workbook(
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Applies an atomic batch of ordered operations to an Excel workbook."""
-    src_path = workspace.resolve_path(file_name, must_exist=True)
-
-    # Determine destination path
-    if output_filename and str(output_filename) != str(file_name):
-        dest_path = workspace.resolve_path(output_filename, must_exist=False)
-        if dest_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Destination file '{output_filename}' already exists and overwrite=False."
-            )
-        is_inplace = False
-    else:
-        dest_path = src_path
-        is_inplace = True
+    src_path, dest_path, out_name = _resolve_dest_path(
+        workspace, file_name, output_filename, overwrite
+    )
 
     ops = operations or []
     if not ops:
@@ -287,10 +360,9 @@ def update_workbook(
 
     keep_vba = src_path.suffix.lower() in (".xlsm", ".xltm")
     wb = openpyxl.load_workbook(src_path, keep_vba=keep_vba, data_only=False)
-    tmp_path: Path | None = None
 
     try:
-        # 1. Preflight validation
+        # 1. validation
         tracker = ConflictTracker()
         validated_ops: list[tuple[Any, dict[str, Any]]] = []
 
@@ -301,71 +373,22 @@ def update_workbook(
                     f"Unsupported operation action: '{action}'. Supported actions: {list(OPERATION_HANDLERS.keys())}"
                 )
             handler = OPERATION_HANDLERS[action]
-
-            # Strict envelope: no unknown keys, required keys present.
-            # Unknown keys are checked first because a typo'd required key
-            # appears as both unknown and missing, and the suggestion is the
-            # more actionable error. Happy-path cost is two set operations
-            # per op; the difflib search below only runs on failures.
-            keys = op.keys() - {"action"}
-            unknown = keys - handler.REQUIRED_KEYS - handler.OPTIONAL_KEYS
-            if unknown:
-                allowed = sorted(handler.REQUIRED_KEYS | handler.OPTIONAL_KEYS)
-                hints = []
-                for bad in sorted(unknown, key=str):
-                    str_bad = str(bad)
-                    close = get_close_matches(str_bad, allowed, n=1)
-                    hints.append(
-                        f"'{str_bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
-                    )
-                raise ValueError(
-                    f"Unknown key(s) {', '.join(hints)} for '{action}'. "
-                    f"Allowed keys: {allowed}"
-                )
-            missing = handler.REQUIRED_KEYS - keys
-            if missing:
-                raise ValueError(
-                    f"'{action}' requires key(s) {sorted(handler.REQUIRED_KEYS)}, "
-                    f"missing: {sorted(missing)}"
-                )
-
-            validated = handler.validate(wb, op, tracker)
-            validated_ops.append((handler, validated))
+            _validate_operation_envelope(op, handler, action)
+            validated_ops.append((handler, handler.validate(wb, op, tracker)))
 
         # 2. In-memory application
         for handler, validated in validated_ops:
             handler.apply(wb, validated)
 
         # 3. Atomic temporary write
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            dir=dest_path.parent, prefix=".tmp_", suffix=dest_path.suffix
-        )
-        os.close(tmp_fd)
-        tmp_path = Path(tmp_path_str)
-
-        wb.save(tmp_path)
+        _atomic_commit(wb, dest_path, validated_ops, keep_vba)
     finally:
         wb.close()
-
-    # 4. Post-save verification & 5. Atomic swap
-    try:
-        verify_wb = openpyxl.load_workbook(tmp_path, keep_vba=keep_vba, data_only=False)
-        try:
-            for handler, validated in validated_ops:
-                handler.verify(verify_wb, validated)
-        finally:
-            verify_wb.close()
-
-        os.replace(tmp_path, dest_path)
-    except Exception:
-        if tmp_path and tmp_path.exists():
-            tmp_path.unlink()
-        raise
 
     return {
         "status": "success",
         "file_name": str(file_name),
-        "output_file": str(dest_path.name if is_inplace else output_filename),
+        "output_file": out_name,
         "operations_applied": len(validated_ops),
     }
 

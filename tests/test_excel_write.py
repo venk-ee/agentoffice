@@ -275,6 +275,27 @@ class TestExcelWrite(unittest.TestCase):
         tmp_files = list(self.workspace_path.glob(".tmp_*"))
         self.assertEqual(tmp_files, [])
 
+    def test_save_failure_cleans_up_temp_file(self):
+        # Simulate a crash during wb.save (e.g. disk full or serialization crash)
+        with patch.object(openpyxl.Workbook, "save", side_effect=OSError("Disk full")):
+            with self.assertRaises(OSError):
+                update_workbook(
+                    self.workspace,
+                    "test_data.xlsx",
+                    operations=[
+                        {
+                            "action": "set_cell",
+                            "sheet": "Summary",
+                            "cell": "B1",
+                            "value": 9999,
+                        }
+                    ],
+                )
+
+        # Confirm temporary files were cleaned up
+        tmp_files = list(self.workspace_path.glob(".tmp_*"))
+        self.assertEqual(tmp_files, [])
+
     def test_update_workbook_tool_execution(self):
         tool = UpdateWorkbookTool(workspace=self.workspace)
         result = tool.execute(
