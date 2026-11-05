@@ -3,9 +3,11 @@ import unittest
 from pathlib import Path
 
 import openpyxl
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table
 
 from agentoffice.tools.excel.inspect import InspectWorkbookTool, inspect_workbook
+from agentoffice.tools.excel.slots import classify_slot, collect_named_slots
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 
 
@@ -37,6 +39,15 @@ class TestExcelInspect(unittest.TestCase):
         tab = Table(displayName="OrdersTable", ref="A1:B2")
         ws2.add_table(tab)
 
+        # Named slots: settable single-cell names plus non-settable shapes
+        wb.defined_names.add(DefinedName("TaxRate", attr_text="Summary!$C$1"))
+        ws2.defined_names.add(DefinedName("LocalNote", attr_text="Orders!$C$1"))
+        wb.defined_names.add(DefinedName("Quarterly", attr_text="Summary!$A$1:$B$2"))
+        wb.defined_names.add(DefinedName("Commission", attr_text="0.05"))
+        wb.defined_names.add(
+            DefinedName("Computed", attr_text="=SUM(Summary!$B$1:$B$2)")
+        )
+
         wb.save(self.wb_path)
         wb.close()
 
@@ -51,6 +62,51 @@ class TestExcelInspect(unittest.TestCase):
         self.assertEqual(result["sheet_names"], ["Summary", "Orders"])
         self.assertEqual(result["formulas"][0]["formula"], "=B1*0.2")
         self.assertEqual(result["tables"][0]["name"], "OrdersTable")
+
+    def test_inspect_reports_named_slots_across_scopes(self):
+        result = inspect_workbook(self.workspace, "test_data.xlsx")
+        slots = {s["name"]: s for s in result["named_slots"]}
+        self.assertEqual(slots["TaxRate"]["scope"], "workbook")
+        self.assertEqual(slots["TaxRate"]["ref"], "Summary!$C$1")
+        self.assertEqual(slots["LocalNote"]["scope"], "Orders")
+
+    def test_inspect_classifies_slot_settability(self):
+        result = inspect_workbook(self.workspace, "test_data.xlsx")
+        slots = {s["name"]: s for s in result["named_slots"]}
+        self.assertTrue(slots["TaxRate"]["settable"])
+        self.assertEqual(slots["TaxRate"]["kind"], "cell")
+        self.assertEqual(slots["Quarterly"]["kind"], "range")
+        self.assertFalse(slots["Quarterly"]["settable"])
+        self.assertEqual(slots["Commission"]["kind"], "constant")
+        self.assertFalse(slots["Commission"]["settable"])
+        self.assertEqual(slots["Computed"]["kind"], "formula")
+        self.assertFalse(slots["Computed"]["settable"])
+
+    def test_classify_slot_multi_destination(self):
+        defn = DefinedName("TwoCells", attr_text="Summary!$A$1,Summary!$B$2")
+        self.assertEqual(classify_slot(defn), "multi")
+
+    def test_classify_slot_handles_formula_expressions_and_broken_refs(self):
+        expr_defn = DefinedName("Expr", attr_text="Summary!$A$1+$B$1")
+        self.assertEqual(classify_slot(expr_defn), "formula")
+
+        ref_defn = DefinedName("Broken", attr_text="#REF!")
+        self.assertEqual(classify_slot(ref_defn), "constant")
+
+        bad_defn = DefinedName("BadCoord", attr_text="Summary!NOT_A_VALID_RANGE")
+        self.assertEqual(classify_slot(bad_defn), "range")
+
+    def test_collect_named_slots_filters_internal_and_hidden(self):
+        wb = openpyxl.Workbook()
+        wb.defined_names.add(DefinedName("TaxRate", attr_text="Summary!$B$2"))
+        wb.defined_names.add(
+            DefinedName("_xlnm.Print_Area", attr_text="Summary!$A$1:$B$2")
+        )
+        wb.defined_names.add(
+            DefinedName("Secret", attr_text="Summary!$B$5", hidden=True)
+        )
+        names = [name for name, _, _ in collect_named_slots(wb)]
+        self.assertEqual(names, ["TaxRate"])
 
     def test_inspect_tool_execution(self):
         tool = InspectWorkbookTool(workspace=self.workspace)

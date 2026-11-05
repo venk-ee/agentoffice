@@ -633,6 +633,22 @@ class TestExcelWrite(unittest.TestCase):
             )
         self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
 
+    def test_set_slot_formula_expression_raises_value_error(self):
+        expr_wb_file = "expr_slot.xlsx"
+        wb = openpyxl.Workbook()
+        defn = DefinedName("ExprSlot", attr_text="Summary!$A$1+$B$1")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / expr_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                expr_wb_file,
+                operations=[{"action": "set_slot", "name": "ExprSlot", "value": 10}],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+
     def test_set_slot_multi_cell_raises_value_error(self):
         multi_wb_file = "multi_slot.xlsx"
         wb = openpyxl.Workbook()
@@ -741,3 +757,60 @@ class TestExcelWrite(unittest.TestCase):
                 ],
             )
         self.assertIn("Formula injection prohibited", str(ctx.exception))
+
+    def test_set_slot_typo_suggests_close_match(self):
+        slot_wb_file = "typo_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 0.10
+        wb.defined_names.add(DefinedName("TaxRate", attr_text="Config!$B$2"))
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(KeyError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[{"action": "set_slot", "name": "tax_rate", "value": 0.2}],
+            )
+        self.assertIn("Did you mean 'TaxRate'?", str(ctx.exception))
+        self.assertIn("Available slots: ['TaxRate']", str(ctx.exception))
+
+    def test_set_slot_sheet_scoped_name_resolves(self):
+        slot_wb_file = "local_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B3"] = 0.5
+        ws.defined_names.add(DefinedName("LocalRate", attr_text="Config!$B$3"))
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            slot_wb_file,
+            operations=[{"action": "set_slot", "name": "LocalRate", "value": 0.75}],
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook(slot_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["Config"]["B3"].value, 0.75)
+
+    def test_set_slot_ambiguous_name_rejected(self):
+        slot_wb_file = "ambiguous_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        wb.defined_names.add(DefinedName("Rate", attr_text="Config!$B$2"))
+        ws.defined_names.add(DefinedName("Rate", attr_text="Config!$B$3"))
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[{"action": "set_slot", "name": "Rate", "value": 1}],
+            )
+        self.assertIn("ambiguous", str(ctx.exception))

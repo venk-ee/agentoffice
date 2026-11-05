@@ -15,6 +15,7 @@ from agentoffice.tools.excel.guards import (
     guard_sheet_unprotected,
     is_formula,
 )
+from agentoffice.tools.excel.slots import collect_named_slots
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 
 
@@ -98,15 +99,38 @@ class SetSlotHandler:
         name = operation["name"]
         value = operation["value"]
 
-        defn = wb.defined_names.get(name)
-        if defn is None:
-            raise KeyError(f"Named slot '{name}' not found in workbook.")
+        # Index slots across all scopes
+        by_name: dict[str, list[tuple[str, Any]]] = {}
+        for slot_name, scope, defn in collect_named_slots(wb):
+            by_name.setdefault(slot_name, []).append((scope, defn))
 
-        dests = list(defn.destinations)
+        matches = by_name.get(str(name))
+        if not matches:
+            available = sorted(by_name, key=str)
+            close = get_close_matches(str(name), available, n=1)
+            suggestion = f" Did you mean '{close[0]}'?" if close else ""
+            raise KeyError(
+                f"Named slot '{name}' not found.{suggestion} "
+                f"Available slots: {available}"
+            )
+        if len(matches) > 1:
+            scopes = sorted(scope for scope, _ in matches)
+            raise ValueError(
+                f"Named slot '{name}' is ambiguous (defined at scopes {scopes})."
+            )
+        defn = matches[0][1]
+
+        try:
+            dests = list(defn.destinations)
+        except Exception:
+            # Non-grid expressions crash openpyxl's tokenizer
+            dests = []
+
         if not dests:
+            ref_desc = defn.attr_text or defn.value or ""
             raise ValueError(
                 f"Named slot '{name}' does not resolve to a worksheet grid cell "
-                f"(defined as constant/formula: '{defn.attr_text}'). Slot updates only apply to grid-backed cells."
+                f"(defined as constant/formula: '{ref_desc}'). Slot updates only apply to grid-backed cells."
             )
         if len(dests) > 1:
             raise ValueError(f"Named slot '{name}' points to multiple destinations.")
@@ -121,7 +145,10 @@ class SetSlotHandler:
             )
 
         clean_c = clean_coord(cell_coord)
-        min_col, min_row, max_col, max_row = range_boundaries(clean_c)
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(clean_c)
+        except (ValueError, TypeError):
+            raise ValueError(f"Named slot '{name}' coordinate '{clean_c}' is invalid.")
         is_single_cell = (
             None not in (min_col, min_row, max_col, max_row)
             and min_col == max_col
@@ -459,7 +486,9 @@ class UpdateWorkbookTool(BaseTool):
             description=(
                 "Apply an atomic batch of ordered operations to an Excel workbook. "
                 "Supported actions: 'set_cell' (keys: sheet, cell, value), "
-                "'set_slot' (keys: name, value; updates a single-cell defined name), "
+                "'set_slot' (keys: name, value; updates a single-cell defined "
+                "name — discover available names via inspect_workbook's "
+                "named_slots), "
                 "'append_table' (keys: table, rows; each row is a dict keyed by the "
                 "table's column names, e.g. {'Item': 'Mouse', 'Price': 50}, preferred, "
                 "or a list of scalar values in column order). "
