@@ -52,6 +52,14 @@ class BaseAgent(ABC):
 
     def run(self, message: str, max_iterations: int = 10) -> str:
         self.memory.add_user_message(message)
+
+        # Check if we need to compact before making the LLM call
+        if (
+            self.memory.session_usage.get("total_tokens", 0)
+            > self.memory.token_threshold
+        ):
+            self.compact(force=False)
+
         tools_schema = [tool.to_schema() for tool in self.tool_map.values()] or None
 
         for turn in range(max_iterations):
@@ -73,14 +81,20 @@ class BaseAgent(ABC):
                 result = self.execute_tool(
                     tool_call.function.name, tool_call.function.arguments
                 )
-                if self.on_tool_call:
-                    print(f"Tool called: {tool_call.function.name}")
-                    self.on_tool_call(
-                        tool_call.function.name, tool_call.function.arguments, result
-                    )
                 self.memory.add_tool_message(
                     tool_call.id, tool_call.function.name, result
                 )
+                if self.on_tool_call:
+                    print(f"Tool called: {tool_call.function.name}")
+                    try:
+                        self.on_tool_call(
+                            tool_call.function.name,
+                            tool_call.function.arguments,
+                            result,
+                        )
+                    except Exception:
+                        # Logging/callback failures should never crash the agent's conversation state
+                        pass
         return "Max tool calls reached"
 
     def clear_history(self):

@@ -130,6 +130,18 @@ class AgentMemory:
             if content:
                 text_for_compaction.append(f"{role.upper()}: {content}")
 
+            # Include tool calls even if content is empty/None
+            if msg.get("tool_calls"):
+                tool_info = []
+                for tc in msg["tool_calls"]:
+                    tool_name = tc.get("function", {}).get("name", "")
+                    tool_args = str(tc.get("function", {}).get("arguments", ""))
+                    tool_info.append(f"{tool_name}({tool_args})")
+                if tool_info:
+                    text_for_compaction.append(
+                        f"{role.upper()}: called {'; '.join(tool_info)}"
+                    )
+
         transcript = "\n\n".join(text_for_compaction)
 
         summary_messages = [
