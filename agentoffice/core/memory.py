@@ -1,5 +1,3 @@
-
-
 class AgentMemory:
     def __init__(
         self,
@@ -35,7 +33,9 @@ class AgentMemory:
 
     def add_tool_message(self, tool_call_id: str, name: str, content: str) -> None:
         if len(content) > self.max_tool_chars:
-            content = content[: self.max_tool_chars] + "\n... [Truncated: output too large]"
+            content = (
+                content[: self.max_tool_chars] + "\n... [Truncated: output too large]"
+            )
 
         self.history.append(
             {
@@ -77,7 +77,7 @@ class AgentMemory:
 
     def record_usage(self, usage) -> None:
         if not usage:
-            return 
+            return
 
         cached = (
             getattr(usage.prompt_tokens_details, "cached_tokens", 0)
@@ -93,7 +93,9 @@ class AgentMemory:
         }
         self.session_usage["count"] = self.session_usage.get("count", 0) + 1
         for key in self.last_usage:
-            self.session_usage[key] = self.session_usage.get(key, 0) + self.last_usage[key]
+            self.session_usage[key] = (
+                self.session_usage.get(key, 0) + self.last_usage[key]
+            )
 
     def clear_history(self):
         self.history = []
@@ -121,7 +123,7 @@ class AgentMemory:
         if not old_messages:
             return None
 
-        text_for_compaction=[]
+        text_for_compaction = []
         for msg in old_messages:
             role = msg.get("role", "")
             content = msg.get("content", "")
@@ -156,7 +158,10 @@ class AgentMemory:
             else []
         )
         new_history.append(
-            {"role": "assistant", "content": f"[Summary of previous conversation]\n{summary}"}
+            {
+                "role": "assistant",
+                "content": f"[Summary of previous conversation]\n{summary}",
+            }
         )
         new_history.extend(self.history[slice_index:])
         self.history = new_history
@@ -170,9 +175,8 @@ class AgentMemory:
             return None
 
         target = int(len(self.history) * (1 - keep_ratio))
-        
+
         for i in range(target, 0, -1):
             if self.history[i]["role"] == "user":
                 return i
         return None
-

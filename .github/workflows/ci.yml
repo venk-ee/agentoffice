@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint & PyTest Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python & uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.11"
+
+      # --- Lint & Format ---
+      - name: Check code formatting (Ruff)
+        run: uvx ruff format --check .
+
+      - name: Check lint rules (Ruff)
+        run: uvx ruff check .
+
+      # --- Dependency Sync & Tests ---
+      - name: Sync dependencies from lockfile
+        run: uv sync --frozen
+
+      - name: Run PyTest Test Suite with Coverage
+        env:
+          OPENAI_API_KEY: "mock-key-for-ci"
+        run: uv run pytest --cov=agentoffice

@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+tone_instructions: >
+  Act as a Staff Systems & Security Engineer. Be direct and concise.
+  Prioritize path sandboxing, formula preservation, memory hygiene, and tool contracts over style.
+early_access: false
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!uv.lock"
+    - "!docs/**"
+    - "!workspace/**"
+    - "!ignore/**"
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        Repository Context:
+        AgentOffice is an autonomous agent execution engine for programmatic spreadsheet operations,
+        featuring chroot-style workspace sandboxing, openpyxl formula-guard mechanisms, and token-bounded FIFO compaction.
+
+        Review rigorously against these core engineering invariants:
+
+        1. PATH TRAVERSAL & WORKSPACE CONFINEMENT:
+           - Rigorously check all file paths. All read, inspect, and write operations MUST resolve strictly inside the configured workspace boundary (`./workspace`).
+           - Flag any unresolved relative paths (`../`), symlink bypasses, or raw string concatenation that could escape the sandbox.
+
+        2. SPREADSHEET FORMULA PRESERVATION:
+           - In write operations, verify formula safety guards. An agent must never unintentionally overwrite dynamic Excel formulas (e.g., `=SUM(...)`) without explicit override confirmation.
+           - Ensure write tools check cell data types (`cell.data_type == 'f'`) before committing writes.
+
+        3. TOKEN BUDGETING & MEMORY COMPACTION:
+           - Tool outputs must be clamped (`max_tool_chars`) to prevent context window explosion on giant sheets.
+           - Conversation history must maintain valid OpenAI/Gemini message role sequences (`system` -> `user` -> `assistant` with `tool_calls` -> `tool` results).
+           - Slicing or compaction must preserve recent reasoning thoughts and never orphan a `tool` response without its matching `tool_call_id`.
+
+        4. ERROR RECOVERY & DETERMINISTIC SCHEMAS:
+           - Tool failures must return informative, actionable error strings back to the agent rather than crashing the loop with unhandled exceptions.
+           - Tool argument schemas must use strict Pydantic definitions.

@@ -24,12 +24,14 @@ def test_memory():
     assert memory.history[0] == {"role": "system", "content": "You are an assistant"}
     assert memory.last_usage["total_tokens"] == 0
     assert memory.session_usage["total_tokens"] == 0
-    
+
+
 def test_add_user_message():
     memory = AgentMemory(system_prompt="You are an assistant")
     memory.add_user_message("Hello")
     assert len(memory.history) == 2
     assert memory.history[1] == {"role": "user", "content": "Hello"}
+
 
 def test_add_assistant_message():
     memory = AgentMemory(system_prompt="You are an assistant")
@@ -37,11 +39,18 @@ def test_add_assistant_message():
     assert len(memory.history) == 2
     assert memory.history[1] == {"role": "assistant", "content": "Hello"}
 
+
 def test_add_tool_message():
     memory = AgentMemory(system_prompt="You are an assistant")
     memory.add_tool_message("tool_id", "tool_name", "tool_result")
     assert len(memory.history) == 2
-    assert memory.history[1] == {"role": "tool", "tool_call_id": "tool_id", "name": "tool_name", "content": "tool_result"}
+    assert memory.history[1] == {
+        "role": "tool",
+        "tool_call_id": "tool_id",
+        "name": "tool_name",
+        "content": "tool_result",
+    }
+
 
 def test_clear_history():
     memory = AgentMemory(system_prompt="You are an assistant")
@@ -52,11 +61,13 @@ def test_clear_history():
     assert len(memory.history) == 1
     assert memory.history[0] == {"role": "system", "content": "You are an assistant"}
 
+
 def test_memory_initialization_empty():
     memory = AgentMemory()
     assert len(memory.history) == 0
     assert memory.last_usage["total_tokens"] == 0
     assert memory.session_usage["total_tokens"] == 0
+
 
 def test_find_safe_slice_index_too_short():
     memory = AgentMemory()
@@ -79,4 +90,3 @@ def test_find_safe_slice_index_finds_user_boundary():
     slice_idx = memory._find_safe_slice_index(keep_ratio=0.3)
     assert slice_idx is not None
     assert memory.history[slice_idx]["role"] == "user"
-

@@ -20,7 +20,6 @@ class ChatInterface:
             print(f"Agent: {reply}")
 
 
-
 if __name__ == "__main__":
     workspace = Path("./workspace").resolve()
     tools = create_excel_tools(workspace)

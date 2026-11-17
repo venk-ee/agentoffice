@@ -75,10 +75,14 @@ class BaseAgent(ABC):
                 )
                 if self.on_tool_call:
                     print(f"Tool called: {tool_call.function.name}")
-                    self.on_tool_call(tool_call.function.name, tool_call.function.arguments, result)
-                self.memory.add_tool_message(tool_call.id, tool_call.function.name, result)
+                    self.on_tool_call(
+                        tool_call.function.name, tool_call.function.arguments, result
+                    )
+                self.memory.add_tool_message(
+                    tool_call.id, tool_call.function.name, result
+                )
         return "Max tool calls reached"
-    
+
     def clear_history(self):
         self.memory.clear_history()
         return self.memory.history
@@ -94,6 +98,6 @@ class BaseAgent(ABC):
     @property
     def last_usage(self) -> dict:
         return self.memory.last_usage
-    
+
     def compact(self, force: bool = True):
         return self.memory.compact(self.client, self.model, force=force)
