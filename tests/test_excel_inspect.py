@@ -1,11 +1,12 @@
 import tempfile
 import unittest
 from pathlib import Path
+
 import openpyxl
 from openpyxl.worksheet.table import Table
 
+from agentoffice.tools.excel.inspect import InspectWorkbookTool, inspect_workbook
 from agentoffice.tools.excel.workspace import ExcelWorkspace
-from agentoffice.tools.excel.inspect import inspect_workbook, InspectWorkbookTool
 
 
 class TestExcelInspect(unittest.TestCase):
@@ -42,23 +43,22 @@ class TestExcelInspect(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-
     def test_inspect_workbook_finds_sheets_formulas_and_tables(self):
         result = inspect_workbook(self.workspace, "test_data.xlsx")
         self.assertIn("sheet_names", result)
         self.assertIn("formulas", result)
         self.assertIn("tables", result)
-        self.assertEqual(result["sheet_names"], ["Summary","Orders"])
-        self.assertEqual(result["formulas"][0]["formula"],"=B1*0.2")
+        self.assertEqual(result["sheet_names"], ["Summary", "Orders"])
+        self.assertEqual(result["formulas"][0]["formula"], "=B1*0.2")
         self.assertEqual(result["tables"][0]["name"], "OrdersTable")
-    
+
     def test_inspect_tool_execution(self):
         tool = InspectWorkbookTool(workspace=self.workspace)
         result = tool.execute("test_data.xlsx")
         self.assertEqual(result["active_sheet"], "Summary")
         self.assertEqual(result["sheet_names"], ["Summary", "Orders"])
         self.assertEqual(result["tables"][0]["name"], "OrdersTable")
-    
+
     def test_inspect_tool_error_handling(self):
         tool = InspectWorkbookTool(workspace=self.workspace)
         result = tool.execute("nonexistent.xlsx")
