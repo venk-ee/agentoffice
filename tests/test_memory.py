@@ -1,5 +1,6 @@
-from agentoffice.core.memory import AgentMemory
 from unittest.mock import MagicMock
+
+from agentoffice.core.memory import AgentMemory
 
 
 def test_record_usage_with_cache():

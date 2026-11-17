@@ -58,8 +58,9 @@ class AgentMemory:
 
         tool_calls = getattr(message, "tool_calls", None)
         if tool_calls:
-            msg_dict["tool_calls"] = [
-                {
+            msg_dict["tool_calls"] = []
+            for tc in tool_calls:
+                tc_data = {
                     "id": tc.id,
                     "type": "function",
                     "function": {
@@ -67,8 +68,10 @@ class AgentMemory:
                         "arguments": tc.function.arguments,
                     },
                 }
-                for tc in tool_calls
-            ]
+                extra_content = getattr(tc, "extra_content", None)
+                if extra_content:
+                    tc_data["extra_content"] = extra_content
+                msg_dict["tool_calls"].append(tc_data)
 
         self.history.append(msg_dict)
 

@@ -508,7 +508,16 @@ class UpdateWorkbookTool(BaseTool):
                     },
                     "operations": {
                         "type": "array",
-                        "items": {"type": "object", "required": ["action"]},
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "description": "The operation to perform, e.g. 'write_cells', 'add_sheet'",
+                                },
+                            },
+                            "required": ["action"],
+                        },
                         "description": "List of operations to apply.",
                     },
                     "overwrite": {
