@@ -1,13 +1,32 @@
 [project]
-name = "agent-office"
+name = "agentoffice"
 version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-    "openai",
-    "openpyxl",
-    "python-dotenv",
-    "pydantic>=2.0"
+description = "Deterministic, sandboxed, formula-preserving Excel execution engine powered by autonomous LLM function calling"
+readme = "README.md"
+authors = [
+    { name = "Venkat", email = "venk-ee@users.noreply.github.com" }
 ]
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business :: Financial :: Spreadsheet",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "openai>=1.12.0",
+    "openpyxl>=3.1.2",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+agentoffice = "agentoffice.interface.chat:main"
 
 [tool.ruff]
 line-length = 88
@@ -20,10 +39,15 @@ select = [
     "I",   # isort (automatically sort imports)
     "UP",  # pyupgrade (modern Python syntax)
 ]
+ignore = [
+    "E501",  # line-too-long (handled automatically by ruff format)
+]
 
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.3",
 ]
 
 [tool.pytest.ini_options]
