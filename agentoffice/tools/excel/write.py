@@ -15,7 +15,10 @@ from agentoffice.tools.excel.guards import (
     guard_sheet_unprotected,
     is_formula,
 )
-from agentoffice.tools.excel.slots import collect_named_slots
+from agentoffice.tools.excel.slots import (
+    collect_named_slots,
+    is_direct_grid_reference,
+)
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 
 
@@ -120,6 +123,13 @@ class SetSlotHandler:
             )
         defn = matches[0][1]
 
+        if not is_direct_grid_reference(defn):
+            ref_desc = defn.attr_text or defn.value or ""
+            raise ValueError(
+                f"Named slot '{name}' does not resolve to a worksheet grid cell "
+                f"(defined as constant/formula: '{ref_desc}'). Slot updates only apply to grid-backed cells."
+            )
+
         try:
             dests = list(defn.destinations)
         except Exception:
@@ -136,9 +146,9 @@ class SetSlotHandler:
             raise ValueError(f"Named slot '{name}' points to multiple destinations.")
 
         sheet_title, cell_coord = dests[0]
-        sheet_name = (sheet_title.strip("'") if sheet_title else None) or (
-            wb.active.title if wb.active else None
-        )
+        sheet_name = (
+            sheet_title.strip("'").replace("''", "'") if sheet_title else None
+        ) or (wb.active.title if wb.active else None)
         if not sheet_name:
             raise ValueError(
                 f"Named slot '{name}' destination worksheet could not be determined."
@@ -160,10 +170,13 @@ class SetSlotHandler:
                 f"scalar slot updates require a single cell."
             )
 
+        # Normalize accepted single-cell range (e.g. 'B2:B2' -> 'B2') to a single coordinate
+        single_cell_coord = f"{get_column_letter(min_col)}{min_row}"
+
         # Delegate to SetCellHandler for protection, collision tracking, formula checks
         return SetCellHandler.validate(
             wb,
-            {"sheet": sheet_name, "cell": clean_c, "value": value},
+            {"sheet": sheet_name, "cell": single_cell_coord, "value": value},
             tracker,
         )
 
@@ -363,7 +376,7 @@ def _resolve_dest_path(
         output_name = str(output_filename)
     else:
         dest_path = src_path
-        output_name = src_path.name
+        output_name = str(file_name)
 
     return src_path, dest_path, output_name
 
@@ -513,7 +526,12 @@ class UpdateWorkbookTool(BaseTool):
                             "properties": {
                                 "action": {
                                     "type": "string",
-                                    "description": "The operation to perform, e.g. 'write_cells', 'add_sheet'",
+                                    "enum": [
+                                        "set_cell",
+                                        "set_slot",
+                                        "append_table",
+                                    ],
+                                    "description": "The operation action: 'set_cell', 'set_slot', or 'append_table'.",
                                 },
                             },
                             "required": ["action"],

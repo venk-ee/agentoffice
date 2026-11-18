@@ -814,3 +814,76 @@ class TestExcelWrite(unittest.TestCase):
                 operations=[{"action": "set_slot", "name": "Rate", "value": 1}],
             )
         self.assertIn("ambiguous", str(ctx.exception))
+
+    def test_set_slot_computed_expression_rejected(self):
+        computed_wb_file = "computed_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 10
+        defn = DefinedName("Computed", attr_text="Config!$B$2*2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / computed_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                computed_wb_file,
+                operations=[{"action": "set_slot", "name": "Computed", "value": 99}],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+
+    def test_set_slot_single_cell_range_normalized(self):
+        range_wb_file = "single_range_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        defn = DefinedName("SingleRange", attr_text="Config!$B$2:$B$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / range_wb_file)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            range_wb_file,
+            operations=[{"action": "set_slot", "name": "SingleRange", "value": 42}],
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook(range_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["Config"]["B2"].value, 42)
+
+    def test_set_slot_escaped_apostrophe_sheet_name(self):
+        apostrophe_wb_file = "apostrophe_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "O'Brien"
+        defn = DefinedName("OBrienSlot", attr_text="'O''Brien'!$A$1")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / apostrophe_wb_file)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            apostrophe_wb_file,
+            operations=[{"action": "set_slot", "name": "OBrienSlot", "value": 99}],
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook(apostrophe_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["O'Brien"]["A1"].value, 99)
+
+    def test_update_workbook_preserves_subfolder_output_name(self):
+        sub_dir = self.workspace_path / "reports"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        wb = openpyxl.Workbook()
+        wb.save(sub_dir / "data.xlsx")
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            "reports/data.xlsx",
+            operations=[{"action": "set_cell", "cell": "A1", "value": "test"}],
+        )
+        self.assertEqual(result["file_name"], "reports/data.xlsx")

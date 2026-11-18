@@ -7,9 +7,13 @@ from agentoffice.tools.excel.workspace import ExcelWorkspace
 from agentoffice.tools.excel.write import UpdateWorkbookTool
 
 
-def create_excel_tools(workspace_dir: str | Path) -> list[BaseTool]:
+def create_excel_tools(workspace_dir: str | Path | ExcelWorkspace) -> list[BaseTool]:
     """Create and return all Excel tools bound to the given workspace directory."""
-    ws = ExcelWorkspace(workspace_dir)
+    ws = (
+        workspace_dir
+        if isinstance(workspace_dir, ExcelWorkspace)
+        else ExcelWorkspace(workspace_dir)
+    )
     return [
         InspectWorkbookTool(ws),
         ReadRangesTool(ws),

@@ -1,9 +1,22 @@
 """Named-slot domain helpers shared by the inspect and write tools."""
 
+from openpyxl.formula.tokenizer import Tokenizer
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.workbook.defined_name import DefinedName
 
 from agentoffice.tools.excel.guards import clean_coord
+
+
+def is_direct_grid_reference(defn: DefinedName) -> bool:
+    """Return True if defn is a direct single grid reference, not an expression or formula."""
+    raw = (defn.attr_text or defn.value or "").strip()
+    if not raw:
+        return False
+    try:
+        tok = Tokenizer("=" + raw.lstrip("="))
+        return len(tok.items) == 1 and tok.items[0].subtype == "RANGE"
+    except Exception:
+        return False
 
 
 def collect_named_slots(workbook) -> list[tuple[str, str, DefinedName]]:
@@ -47,6 +60,9 @@ def classify_slot(defn: DefinedName) -> str:
     if not dests:
         attr = (defn.attr_text or defn.value or "").strip()
         return "formula" if attr.startswith("=") else "constant"
+
+    if not is_direct_grid_reference(defn):
+        return "formula"
 
     _, coord = dests[0]
     try:

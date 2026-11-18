@@ -17,7 +17,7 @@ def _resolve_sheet_and_coords(
     """Resolve worksheet and coordinate string from 'Sheet!A1' or 'A1'."""
     if "!" in range_str:
         sheet_name, coords = range_str.split("!", 1)
-        clean_sheet = sheet_name.strip("'")
+        clean_sheet = sheet_name.strip("'").replace("''", "'")
         if clean_sheet not in workbook.sheetnames:
             raise KeyError(f"Sheet '{sheet_name}' not found in workbook '{file_name}'")
         return workbook[clean_sheet], coords
@@ -60,16 +60,23 @@ def read_ranges(
     """Reads one or more A1 ranges from a workbook in a single
     atomic turn."""
     with workspace.open_workbook(file_name, data_only=data_only) as workbook:
-        total_cells = sum(
+        initial_total = sum(
             _count_range_cells(*_resolve_sheet_and_coords(workbook, r, file_name))
             for r in ranges
         )
-        if total_cells > max_cells:
-            raise ValueError(format_limit_exceeded_error(total_cells, max_cells))
+        if initial_total > max_cells:
+            raise ValueError(format_limit_exceeded_error(initial_total, max_cells))
 
+        accumulated_cells = 0
         value_ranges = []
         for range_str in ranges:
             ws, coords = _resolve_sheet_and_coords(workbook, range_str, file_name)
+            count = _count_range_cells(ws, coords)
+            if accumulated_cells + count > max_cells:
+                raise ValueError(
+                    format_limit_exceeded_error(accumulated_cells + count, max_cells)
+                )
+            accumulated_cells += count
             values = _extract_values_from_target(ws[coords])
             value_ranges.append({"range": range_str, "values": values})
 

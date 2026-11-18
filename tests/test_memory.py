@@ -90,3 +90,52 @@ def test_find_safe_slice_index_finds_user_boundary():
     slice_idx = memory._find_safe_slice_index(keep_ratio=0.3)
     assert slice_idx is not None
     assert memory.history[slice_idx]["role"] == "user"
+
+
+def test_compact_without_system_prompt_includes_first_user_message():
+    memory = AgentMemory()  # no system prompt
+    memory.add_user_message("First user instruction: use data.xlsx")
+    memory.add_assistant_message({"role": "assistant", "content": "R1"})
+    memory.add_user_message("Second user instruction: continue")
+    memory.add_assistant_message({"role": "assistant", "content": "R2"})
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Summary of conversation"
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.usage = None
+    mock_client.chat.completions.create.return_value = mock_response
+
+    summary = memory.compact(mock_client, model="mock-model", force=True)
+    assert summary == "Summary of conversation"
+
+    # Verify that the first user instruction was sent in the compaction transcript
+    create_call = mock_client.chat.completions.create.call_args
+    prompt_sent = create_call.kwargs["messages"][1]["content"]
+    assert "First user instruction: use data.xlsx" in prompt_sent
+
+
+def test_compact_with_system_prompt_preserves_system_prompt():
+    memory = AgentMemory(system_prompt="You are a helper")
+    memory.add_user_message("Turn 1")
+    memory.add_assistant_message({"role": "assistant", "content": "R1"})
+    memory.add_user_message("Turn 2")
+    memory.add_assistant_message({"role": "assistant", "content": "R2"})
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Summary of conversation"
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.usage = None
+    mock_client.chat.completions.create.return_value = mock_response
+
+    summary = memory.compact(mock_client, model="mock-model", force=True)
+    assert summary == "Summary of conversation"
+
+    # System prompt remains at index 0, followed by assistant summary
+    assert memory.history[0]["role"] == "system"
+    assert memory.history[0]["content"] == "You are a helper"
+    assert memory.history[1]["role"] == "assistant"
+    assert "[Summary of previous conversation]" in memory.history[1]["content"]

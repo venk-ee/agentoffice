@@ -5,8 +5,7 @@ from agentoffice.tools.excel import create_excel_tools
 
 
 def print_tool_call(name: str, arguments: str, result: str) -> None:
-    # print(f"\n⚙️  [Tool] {name}({arguments})")
-    print(f"\n⚙️  [Tool] {name}({arguments}) -> {result[:120]}")
+    print(f"\n[Tool] {name}({arguments}) -> {result[:120]}")
 
 
 class ChatInterface:
@@ -15,7 +14,16 @@ class ChatInterface:
 
     def run(self):
         while True:
-            user_input = input("You: ")
+            try:
+                user_input = input("You: ")
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting chat session.")
+                break
+            if user_input.strip().lower() in {"exit", "quit", "q"}:
+                print("Exiting chat session.")
+                break
+            if not user_input.strip():
+                continue
             reply = self.agent.run(user_input)
             print(f"Agent: {reply}")
 

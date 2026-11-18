@@ -20,8 +20,9 @@ class BaseAgent(ABC):
         history: list[dict] | None = None,
         on_tool_call=None,
         memory=None,
+        client: OpenAI | None = None,
     ):
-        self.client = OpenAI(
+        self.client = client or OpenAI(
             api_key=os.getenv("GEMINI_API_KEY"),
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
@@ -29,7 +30,12 @@ class BaseAgent(ABC):
         self.system_prompt = system_prompt
         self.tool_map: dict[str, BaseTool] = {}
         self.on_tool_call = on_tool_call
-        self.memory = memory or AgentMemory(system_prompt=system_prompt)
+        if memory is not None:
+            self.memory = memory
+        else:
+            self.memory = AgentMemory(system_prompt=system_prompt)
+            if history:
+                self.memory.history = list(history)
 
         if tools:
             for tool in tools:
@@ -57,11 +63,7 @@ class BaseAgent(ABC):
 
         for turn in range(max_iterations):
             # Check token budget before each LLM call to prevent exceeding limits
-            if (
-                self.memory.session_usage.get("total_tokens", 0)
-                > self.memory.token_threshold
-            ):
-                self.compact(force=False)
+            self.compact(force=False)
 
             response = self.client.chat.completions.create(
                 model=self.model,

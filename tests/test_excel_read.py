@@ -114,3 +114,25 @@ class TestExcelRead(unittest.TestCase):
             result_rows["ranges"][0]["values"],
             [["Revenue", 1000], ["Tax", "=B1*0.2"]],
         )
+
+    def test_read_ranges_cumulative_cell_limit_exceeded_on_dimension_change(self):
+        # A100 is 1 cell, A:Z on a 2x2 sheet initially looks like 52 cells.
+        # But reading A100 causes max_row to expand to 100, making A:Z require 2,600 cells.
+        with self.assertRaises(ValueError) as ctx:
+            read_ranges(
+                self.workspace,
+                "test_data.xlsx",
+                ["Summary!A100", "Summary!A:Z"],
+                max_cells=200,
+            )
+        self.assertIn("Cell limit exceeded", str(ctx.exception))
+
+    def test_read_ranges_escaped_apostrophe_sheet_name(self):
+        wb = openpyxl.load_workbook(self.wb_path)
+        ws = wb.create_sheet(title="O'Brien")
+        ws["A1"] = "Found"
+        wb.save(self.wb_path)
+        wb.close()
+
+        result = read_ranges(self.workspace, "test_data.xlsx", ["'O''Brien'!A1"])
+        self.assertEqual(result["ranges"][0]["values"], [["Found"]])

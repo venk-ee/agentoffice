@@ -90,6 +90,9 @@ class TestExcelInspect(unittest.TestCase):
         expr_defn = DefinedName("Expr", attr_text="Summary!$A$1+$B$1")
         self.assertEqual(classify_slot(expr_defn), "formula")
 
+        computed_defn = DefinedName("Computed", attr_text="Config!$B$2*2")
+        self.assertEqual(classify_slot(computed_defn), "formula")
+
         ref_defn = DefinedName("Broken", attr_text="#REF!")
         self.assertEqual(classify_slot(ref_defn), "constant")
 

@@ -118,7 +118,10 @@ class AgentMemory:
         slice_index = self._find_safe_slice_index()
         if slice_index is None:
             return None
-        old_messages = self.history[1:slice_index]
+        start_index = (
+            1 if (self.history and self.history[0].get("role") == "system") else 0
+        )
+        old_messages = self.history[start_index:slice_index]
 
         if not old_messages:
             return None
@@ -162,7 +165,7 @@ class AgentMemory:
         )
         if response.usage:
             self.record_usage(response.usage)
-        summary = response.choices[0].message.content
+        summary = response.choices[0].message.content or ""
 
         new_history = (
             self.history[:1]

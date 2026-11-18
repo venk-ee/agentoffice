@@ -30,7 +30,7 @@ def inspect_workbook(
             }
             for ws in wb.worksheets
         }
-        formula = [
+        formulas = [
             {"sheet": ws.title, "cell": cell.coordinate, "formula": cell.value}
             for ws in wb.worksheets
             for row in ws.iter_rows()
@@ -54,9 +54,9 @@ def inspect_workbook(
         ]
         return {
             "sheet_names": list(sheet_details.keys()),
-            "active_sheet": wb.active.title,
+            "active_sheet": wb.active.title if wb.active else None,
             "sheet_details": sheet_details,
-            "formulas": formula,
+            "formulas": formulas,
             "tables": tables,
             "named_slots": named_slots,
         }
