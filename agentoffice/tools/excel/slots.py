@@ -1,10 +1,33 @@
 """Named-slot domain helpers shared by the inspect and write tools."""
 
+import re
+
 from openpyxl.formula.tokenizer import Tokenizer
 from openpyxl.utils.cell import range_boundaries
 from openpyxl.workbook.defined_name import DefinedName
 
 from agentoffice.tools.excel.guards import clean_coord
+
+CELL_OR_RANGE_RE = re.compile(
+    r"^=?"
+    r"(?:'(?:[^']|'')*'|[^'!\s]+)!"  # Sheet
+    r"(?:"
+    r"\$?[A-Za-z]{1,3}\$?[1-9]\d*(?::\$?[A-Za-z]{1,3}\$?[1-9]\d*)?"  # Cell or 2-cell range
+    r"|"
+    r"\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}"  # Col range
+    r"|"
+    r"\$?[1-9]\d*:\$?[1-9]\d*"  # Row range
+    r")$"
+    r"|"
+    r"^=?"
+    r"(?:"
+    r"\$?[A-Za-z]{1,3}\$?[1-9]\d*(?::\$?[A-Za-z]{1,3}\$?[1-9]\d*)?"
+    r"|"
+    r"\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}"
+    r"|"
+    r"\$?[1-9]\d*:\$?[1-9]\d*"
+    r")$"
+)
 
 
 def is_direct_grid_reference(defn: DefinedName) -> bool:
@@ -14,7 +37,9 @@ def is_direct_grid_reference(defn: DefinedName) -> bool:
         return False
     try:
         tok = Tokenizer("=" + raw.lstrip("="))
-        return len(tok.items) == 1 and tok.items[0].subtype == "RANGE"
+        if len(tok.items) != 1 or tok.items[0].subtype != "RANGE":
+            return False
+        return bool(CELL_OR_RANGE_RE.match(raw))
     except Exception:
         return False
 
@@ -61,8 +86,16 @@ def classify_slot(defn: DefinedName) -> str:
         attr = (defn.attr_text or defn.value or "").strip()
         return "formula" if attr.startswith("=") else "constant"
 
-    if not is_direct_grid_reference(defn):
+    raw = (defn.attr_text or defn.value or "").strip()
+    try:
+        tok = Tokenizer("=" + raw.lstrip("="))
+        if len(tok.items) > 1:
+            return "formula"
+    except Exception:
         return "formula"
+
+    if not is_direct_grid_reference(defn):
+        return "formula" if raw.startswith("=") else "range"
 
     _, coord = dests[0]
     try:

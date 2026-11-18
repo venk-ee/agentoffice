@@ -99,6 +99,9 @@ class TestExcelInspect(unittest.TestCase):
         bad_defn = DefinedName("BadCoord", attr_text="Summary!NOT_A_VALID_RANGE")
         self.assertEqual(classify_slot(bad_defn), "range")
 
+        indirect_defn = DefinedName("Indirect", attr_text="Config!B2_Input")
+        self.assertEqual(classify_slot(indirect_defn), "range")
+
     def test_collect_named_slots_filters_internal_and_hidden(self):
         wb = openpyxl.Workbook()
         wb.defined_names.add(DefinedName("TaxRate", attr_text="Summary!$B$2"))

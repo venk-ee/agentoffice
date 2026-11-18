@@ -139,3 +139,24 @@ def test_compact_with_system_prompt_preserves_system_prompt():
     assert memory.history[0]["content"] == "You are a helper"
     assert memory.history[1]["role"] == "assistant"
     assert "[Summary of previous conversation]" in memory.history[1]["content"]
+
+
+def test_compact_returns_none_and_keeps_history_when_summary_empty():
+    memory = AgentMemory(system_prompt="System prompt")
+    memory.add_user_message("Turn 1")
+    memory.add_assistant_message({"role": "assistant", "content": "R1"})
+    memory.add_user_message("Turn 2")
+    memory.add_assistant_message({"role": "assistant", "content": "R2"})
+
+    initial_len = len(memory.history)
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = None  # None summary
+    mock_response = MagicMock(choices=[mock_choice], usage=None)
+    mock_client.chat.completions.create.return_value = mock_response
+
+    summary = memory.compact(mock_client, model="mock-model", force=True)
+    assert summary is None
+    assert len(memory.history) == initial_len
+    assert memory.history[1]["content"] == "Turn 1"

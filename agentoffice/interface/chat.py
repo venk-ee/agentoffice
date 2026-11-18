@@ -24,8 +24,11 @@ class ChatInterface:
                 break
             if not user_input.strip():
                 continue
-            reply = self.agent.run(user_input)
-            print(f"Agent: {reply}")
+            try:
+                reply = self.agent.run(user_input)
+                print(f"Agent: {reply}")
+            except Exception as e:
+                print(f"Error during request: {e}")
 
 
 if __name__ == "__main__":

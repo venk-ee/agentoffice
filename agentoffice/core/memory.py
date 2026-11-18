@@ -165,7 +165,9 @@ class AgentMemory:
         )
         if response.usage:
             self.record_usage(response.usage)
-        summary = response.choices[0].message.content or ""
+        summary = (response.choices[0].message.content or "").strip()
+        if not summary:
+            return None
 
         new_history = (
             self.history[:1]

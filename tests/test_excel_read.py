@@ -136,3 +136,13 @@ class TestExcelRead(unittest.TestCase):
 
         result = read_ranges(self.workspace, "test_data.xlsx", ["'O''Brien'!A1"])
         self.assertEqual(result["ranges"][0]["values"], [["Found"]])
+
+    def test_read_ranges_sheet_title_containing_exclamation_mark(self):
+        wb = openpyxl.load_workbook(self.wb_path)
+        ws = wb.create_sheet(title="Data!2024")
+        ws["A1"] = "Exclamation"
+        wb.save(self.wb_path)
+        wb.close()
+
+        result = read_ranges(self.workspace, "test_data.xlsx", ["'Data!2024'!A1"])
+        self.assertEqual(result["ranges"][0]["values"], [["Exclamation"]])

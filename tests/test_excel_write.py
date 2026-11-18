@@ -834,6 +834,30 @@ class TestExcelWrite(unittest.TestCase):
             )
         self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
 
+    def test_set_slot_indirect_named_range_rejected(self):
+        indirect_wb_file = "indirect_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 100
+        defn = DefinedName("IndirectSlot", attr_text="Config!B2_Input")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / indirect_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                indirect_wb_file,
+                operations=[
+                    {"action": "set_slot", "name": "IndirectSlot", "value": 99}
+                ],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+        # Ensure B2 was not overwritten
+        with self.workspace.open_workbook(indirect_wb_file) as check_wb:
+            self.assertEqual(check_wb["Config"]["B2"].value, 100)
+
     def test_set_slot_single_cell_range_normalized(self):
         range_wb_file = "single_range_slot.xlsx"
         wb = openpyxl.Workbook()

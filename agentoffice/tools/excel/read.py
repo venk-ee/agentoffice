@@ -16,7 +16,7 @@ def _resolve_sheet_and_coords(
 ) -> tuple[Worksheet, str]:
     """Resolve worksheet and coordinate string from 'Sheet!A1' or 'A1'."""
     if "!" in range_str:
-        sheet_name, coords = range_str.split("!", 1)
+        sheet_name, coords = range_str.rsplit("!", 1)
         clean_sheet = sheet_name.strip("'").replace("''", "'")
         if clean_sheet not in workbook.sheetnames:
             raise KeyError(f"Sheet '{sheet_name}' not found in workbook '{file_name}'")
