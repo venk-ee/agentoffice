@@ -102,6 +102,28 @@ class TestExcelInspect(unittest.TestCase):
         indirect_defn = DefinedName("Indirect", attr_text="Config!B2_Input")
         self.assertEqual(classify_slot(indirect_defn), "range")
 
+        sum_no_equal = DefinedName("SumExpr", attr_text="SUM(Config!$B$2)")
+        self.assertEqual(classify_slot(sum_no_equal), "formula")
+
+        add_expr = DefinedName("AddExpr", attr_text="Config!$B$2+Config!$C$2")
+        self.assertEqual(classify_slot(add_expr), "formula")
+
+    def test_inspect_marks_ambiguous_slots_non_settable(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        wb.defined_names.add(DefinedName("Rate", attr_text="Config!$B$2"))
+        ws.defined_names.add(DefinedName("Rate", attr_text="Config!$B$3"))
+        wb.save(self.workspace_path / "ambig.xlsx")
+        wb.close()
+
+        result = inspect_workbook(self.workspace, "ambig.xlsx")
+        rate_slots = [s for s in result["named_slots"] if s["name"] == "Rate"]
+        self.assertEqual(len(rate_slots), 2)
+        for s in rate_slots:
+            self.assertEqual(s["kind"], "cell")
+            self.assertFalse(s["settable"])
+
     def test_collect_named_slots_filters_internal_and_hidden(self):
         wb = openpyxl.Workbook()
         wb.defined_names.add(DefinedName("TaxRate", attr_text="Summary!$B$2"))

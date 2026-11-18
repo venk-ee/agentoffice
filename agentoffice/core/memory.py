@@ -159,12 +159,32 @@ class AgentMemory:
             {"role": "user", "content": f"Conversation:\n{transcript}"},
         ]
 
+        tokens_before = self.last_usage.get("total_tokens", 0)
+
         response = client.chat.completions.create(
             model=model,
             messages=summary_messages,
         )
         if response.usage:
-            self.record_usage(response.usage)
+            # Record summary usage into session totals only without corrupting last_usage
+            self.session_usage["count"] = self.session_usage.get("count", 0) + 1
+            self.session_usage["prompt_tokens"] += (
+                getattr(response.usage, "prompt_tokens", 0) or 0
+            )
+            self.session_usage["completion_tokens"] += (
+                getattr(response.usage, "completion_tokens", 0) or 0
+            )
+            cached = (
+                getattr(response.usage.prompt_tokens_details, "cached_tokens", 0)
+                if hasattr(response.usage, "prompt_tokens_details")
+                and response.usage.prompt_tokens_details
+                else 0
+            ) or 0
+            self.session_usage["cached_tokens"] += cached
+            self.session_usage["total_tokens"] += (
+                getattr(response.usage, "total_tokens", 0) or 0
+            )
+
         summary = (response.choices[0].message.content or "").strip()
         if not summary:
             return None
@@ -183,7 +203,7 @@ class AgentMemory:
         new_history.extend(self.history[slice_index:])
         self.history = new_history
         self.session_usage["compactions"] += 1
-        self.session_usage["tokens_saved"] += self.last_usage.get("total_tokens", 0)
+        self.session_usage["tokens_saved"] += tokens_before
         return summary
 
     def _find_safe_slice_index(self, keep_ratio: float = 0.25) -> int:

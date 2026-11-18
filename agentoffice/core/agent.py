@@ -57,53 +57,64 @@ class BaseAgent(ABC):
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     def run(self, message: str, max_iterations: int = 10) -> str:
+        prev_history_len = len(self.memory.history)
         self.memory.add_user_message(message)
 
         tools_schema = [tool.to_schema() for tool in self.tool_map.values()] or None
 
-        for turn in range(max_iterations):
-            # Check token budget before each LLM call to prevent exceeding limits
-            self.compact(force=False)
+        try:
+            for turn in range(max_iterations):
+                # Check token budget before each LLM call to prevent exceeding limits
+                self.compact(force=False)
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                tools=tools_schema,
-                messages=self.memory.history,
-            )
-
-            response_message = response.choices[0].message
-            if response.usage:
-                self.memory.record_usage(response.usage)
-            self.memory.add_assistant_message(response_message)
-
-            if not response_message.tool_calls:
-                return response_message.content
-
-            for tool_call in response_message.tool_calls:
-                try:
-                    result = self.execute_tool(
-                        tool_call.function.name, tool_call.function.arguments
-                    )
-                except Exception as exc:
-                    # Record the error so the conversation history remains valid
-                    result = f"Error executing {tool_call.function.name}: {exc}"
-
-                self.memory.add_tool_message(
-                    tool_call.id, tool_call.function.name, result
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    tools=tools_schema,
+                    messages=self.memory.history,
                 )
 
-                if self.on_tool_call:
+                response_message = response.choices[0].message
+                if response.usage:
+                    self.memory.record_usage(response.usage)
+                self.memory.add_assistant_message(response_message)
+
+                if not response_message.tool_calls:
+                    return response_message.content
+
+                for tool_call in response_message.tool_calls:
                     try:
-                        print(f"Tool called: {tool_call.function.name}")
-                        self.on_tool_call(
-                            tool_call.function.name,
-                            tool_call.function.arguments,
-                            result,
+                        result = self.execute_tool(
+                            tool_call.function.name, tool_call.function.arguments
                         )
-                    except Exception:
-                        # Callback failures should never crash other tool executions
-                        pass
-        return "Max tool calls reached"
+                    except Exception as exc:
+                        # Record the error so the conversation history remains valid
+                        result = f"Error executing {tool_call.function.name}: {exc}"
+
+                    self.memory.add_tool_message(
+                        tool_call.id, tool_call.function.name, result
+                    )
+
+                    if self.on_tool_call:
+                        try:
+                            print(f"Tool called: {tool_call.function.name}")
+                            self.on_tool_call(
+                                tool_call.function.name,
+                                tool_call.function.arguments,
+                                result,
+                            )
+                        except Exception:
+                            # Callback failures should never crash other tool executions
+                            pass
+            return "Max tool calls reached"
+        except Exception:
+            # If the request failed before completing an assistant turn, remove
+            # the unanswered user message so history maintains a valid role sequence
+            if (
+                len(self.memory.history) == prev_history_len + 1
+                and self.memory.history[-1].get("role") == "user"
+            ):
+                self.memory.history.pop()
+            raise
 
     def clear_history(self):
         self.memory.clear_history()

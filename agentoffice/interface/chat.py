@@ -28,7 +28,11 @@ class ChatInterface:
                 reply = self.agent.run(user_input)
                 print(f"Agent: {reply}")
             except Exception as e:
-                print(f"Error during request: {e}")
+                print(
+                    f"Error during request: {e}. "
+                    "Tool calls completed earlier in this request may have already changed the workbook. "
+                    "Please check the workbook before repeating a write."
+                )
 
 
 if __name__ == "__main__":

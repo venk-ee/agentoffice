@@ -148,3 +148,17 @@ class TestBaseAgent(unittest.TestCase):
         self.agent.on_tool_call = crashing_callback
         reply = self.agent.run("Process data safely")
         self.assertEqual(reply, "Finished smoothly.")
+
+    def test_run_failure_removes_unanswered_user_message(self):
+        self.mock_client.chat.completions.create.side_effect = RuntimeError(
+            "API unavailable"
+        )
+        initial_history_len = len(self.agent.history)
+
+        with self.assertRaises(RuntimeError):
+            self.agent.run("Tell me a secret")
+
+        # The unanswered user message must be removed so consecutive user messages don't occur
+        self.assertEqual(len(self.agent.history), initial_history_len)
+        if initial_history_len > 0:
+            self.assertEqual(self.agent.history[-1]["role"], "system")

@@ -75,37 +75,59 @@ def classify_slot(defn: DefinedName) -> str:
       'formula'  - formula definition, not a grid reference
       'multi'    - resolves to more than one destination
     """
-    try:
-        dests = list(defn.destinations)
-    except Exception:
-        return "formula"
-
-    if len(dests) > 1:
-        return "multi"
-    if not dests:
-        attr = (defn.attr_text or defn.value or "").strip()
-        return "formula" if attr.startswith("=") else "constant"
-
     raw = (defn.attr_text or defn.value or "").strip()
+    if not raw:
+        return "constant"
+
     try:
         tok = Tokenizer("=" + raw.lstrip("="))
-        if len(tok.items) > 1:
-            return "formula"
     except Exception:
         return "formula"
 
-    if not is_direct_grid_reference(defn):
-        return "formula" if raw.startswith("=") else "range"
+    items = tok.items
+    if not items:
+        return "constant"
 
-    _, coord = dests[0]
-    try:
-        min_col, min_row, max_col, max_row = range_boundaries(clean_coord(coord))
-    except (ValueError, TypeError):
-        return "range"
+    # Single-token operand
+    if len(items) == 1:
+        item = items[0]
+        if item.subtype == "RANGE" and CELL_OR_RANGE_RE.match(raw):
+            try:
+                dests = list(defn.destinations)
+                if dests:
+                    min_col, min_row, max_col, max_row = range_boundaries(
+                        clean_coord(dests[0][1])
+                    )
+                    if (
+                        None not in (min_col, min_row, max_col, max_row)
+                        and min_col == max_col
+                        and min_row == max_row
+                    ):
+                        return "cell"
+            except Exception:
+                pass
+            return "range"
 
-    is_single_cell = (
-        None not in (min_col, min_row, max_col, max_row)
-        and min_col == max_col
-        and min_row == max_row
-    )
-    return "cell" if is_single_cell else "range"
+        if item.subtype == "RANGE":
+            return "formula" if raw.startswith("=") else "range"
+        return "constant"
+
+    # Multi-token: check if it is a pure comma-separated union of direct grid references
+    # e.g. [RANGE, ',', RANGE] like Summary!$A$1,Summary!$B$2
+    is_union = True
+    range_count = 0
+    for i, it in enumerate(items):
+        if i % 2 == 0:
+            if it.subtype != "RANGE" or not CELL_OR_RANGE_RE.match(it.value):
+                is_union = False
+                break
+            range_count += 1
+        else:
+            if it.value != ",":
+                is_union = False
+                break
+
+    if is_union and range_count > 1:
+        return "multi"
+
+    return "formula"

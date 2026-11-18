@@ -42,15 +42,19 @@ def inspect_workbook(
             for ws in wb.worksheets
             for t in ws.tables.values()
         ]
+        from collections import Counter
+
+        raw_slots = collect_named_slots(wb)
+        name_counts = Counter(name for name, _, _ in raw_slots)
         named_slots = [
             {
                 "name": name,
                 "scope": scope,
                 "ref": defn.attr_text or defn.value,
                 "kind": (kind := classify_slot(defn)),
-                "settable": kind == "cell",
+                "settable": (kind == "cell" and name_counts[name] == 1),
             }
-            for name, scope, defn in collect_named_slots(wb)
+            for name, scope, defn in raw_slots
         ]
         return {
             "sheet_names": list(sheet_details.keys()),

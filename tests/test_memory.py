@@ -148,7 +148,7 @@ def test_compact_returns_none_and_keeps_history_when_summary_empty():
     memory.add_user_message("Turn 2")
     memory.add_assistant_message({"role": "assistant", "content": "R2"})
 
-    initial_len = len(memory.history)
+    initial_history = [dict(m) for m in memory.history]
 
     mock_client = MagicMock()
     mock_choice = MagicMock()
@@ -158,5 +158,38 @@ def test_compact_returns_none_and_keeps_history_when_summary_empty():
 
     summary = memory.compact(mock_client, model="mock-model", force=True)
     assert summary is None
-    assert len(memory.history) == initial_len
-    assert memory.history[1]["content"] == "Turn 1"
+    assert memory.history == initial_history
+    mock_client.chat.completions.create.assert_called_once()
+
+
+def test_compact_does_not_overwrite_last_usage():
+    memory = AgentMemory(system_prompt="System prompt")
+    memory.last_usage = {
+        "prompt_tokens": 15000,
+        "completion_tokens": 500,
+        "cached_tokens": 0,
+        "total_tokens": 15500,
+    }
+    memory.add_user_message("Turn 1")
+    memory.add_assistant_message({"role": "assistant", "content": "R1"})
+    memory.add_user_message("Turn 2")
+    memory.add_assistant_message({"role": "assistant", "content": "R2"})
+
+    summary_usage = MagicMock()
+    summary_usage.prompt_tokens = 200
+    summary_usage.completion_tokens = 50
+    summary_usage.total_tokens = 250
+    summary_usage.prompt_tokens_details = None
+
+    mock_client = MagicMock()
+    mock_choice = MagicMock()
+    mock_choice.message.content = "Summary"
+    mock_response = MagicMock(choices=[mock_choice], usage=summary_usage)
+    mock_client.chat.completions.create.return_value = mock_response
+
+    summary = memory.compact(mock_client, model="mock-model", force=True)
+    assert summary == "Summary"
+    # last_usage must remain the conversation's usage, NOT the summary request's 200 tokens
+    assert memory.last_usage["prompt_tokens"] == 15000
+    assert memory.session_usage["tokens_saved"] == 15500
+    assert memory.session_usage["prompt_tokens"] == 200
