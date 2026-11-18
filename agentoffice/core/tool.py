@@ -5,7 +5,7 @@ class BaseTool(ABC):
     def __init__(self, name: str, description: str, parameters: dict):
         self.name = name
         self.description = description
-        self.parameters = parameters
+        self.parameters = dict(parameters)
         if "additionalProperties" not in self.parameters:
             self.parameters["additionalProperties"] = False
 

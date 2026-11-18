@@ -1,5 +1,6 @@
 import os
 import tempfile
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,10 @@ from agentoffice.tools.excel.guards import (
     guard_not_formula_injection,
     guard_sheet_unprotected,
     is_formula,
+)
+from agentoffice.tools.excel.slots import (
+    collect_named_slots,
+    is_direct_grid_reference,
 )
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 
@@ -32,15 +37,15 @@ class ConflictTracker:
 
 
 class SetCellHandler:
+    REQUIRED_KEYS = frozenset({"cell", "value"})
+    OPTIONAL_KEYS = frozenset({"sheet"})
+
     @staticmethod
     def validate(
         wb: openpyxl.Workbook,
         operation: dict[str, Any],
         tracker: ConflictTracker,
     ) -> dict[str, Any]:
-
-        if "cell" not in operation or "value" not in operation:
-            raise ValueError("Operation must contain 'cell' and 'value' keys")
 
         value = operation["value"]
         guard_not_formula_injection(value, f"Value at cell {operation['cell']}")
@@ -84,7 +89,105 @@ class SetCellHandler:
             )
 
 
+class SetSlotHandler:
+    REQUIRED_KEYS = frozenset({"name", "value"})
+    OPTIONAL_KEYS = frozenset()
+
+    @staticmethod
+    def validate(
+        wb: openpyxl.Workbook,
+        operation: dict[str, Any],
+        tracker: ConflictTracker,
+    ) -> dict[str, Any]:
+        name = operation["name"]
+        value = operation["value"]
+
+        # Index slots across all scopes
+        by_name: dict[str, list[tuple[str, Any]]] = {}
+        for slot_name, scope, defn in collect_named_slots(wb):
+            by_name.setdefault(slot_name, []).append((scope, defn))
+
+        matches = by_name.get(str(name))
+        if not matches:
+            available = sorted(by_name, key=str)
+            close = get_close_matches(str(name), available, n=1)
+            suggestion = f" Did you mean '{close[0]}'?" if close else ""
+            raise KeyError(
+                f"Named slot '{name}' not found.{suggestion} "
+                f"Available slots: {available}"
+            )
+        if len(matches) > 1:
+            scopes = sorted(scope for scope, _ in matches)
+            raise ValueError(
+                f"Named slot '{name}' is ambiguous (defined at scopes {scopes})."
+            )
+        defn = matches[0][1]
+
+        if not is_direct_grid_reference(defn):
+            ref_desc = defn.attr_text or defn.value or ""
+            raise ValueError(
+                f"Named slot '{name}' does not resolve to a worksheet grid cell "
+                f"(defined as constant/formula: '{ref_desc}'). Slot updates only apply to grid-backed cells."
+            )
+
+        try:
+            dests = list(defn.destinations)
+        except Exception:
+            # Non-grid expressions crash openpyxl's tokenizer
+            dests = []
+
+        if not dests:
+            ref_desc = defn.attr_text or defn.value or ""
+            raise ValueError(
+                f"Named slot '{name}' does not resolve to a worksheet grid cell "
+                f"(defined as constant/formula: '{ref_desc}'). Slot updates only apply to grid-backed cells."
+            )
+        if len(dests) > 1:
+            raise ValueError(f"Named slot '{name}' points to multiple destinations.")
+
+        sheet_title, cell_coord = dests[0]
+        sheet_name = (
+            sheet_title.strip("'").replace("''", "'") if sheet_title else None
+        ) or (wb.active.title if wb.active else None)
+        if not sheet_name:
+            raise ValueError(
+                f"Named slot '{name}' destination worksheet could not be determined."
+            )
+
+        clean_c = clean_coord(cell_coord)
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(clean_c)
+        except (ValueError, TypeError):
+            raise ValueError(f"Named slot '{name}' coordinate '{clean_c}' is invalid.")
+        is_single_cell = (
+            None not in (min_col, min_row, max_col, max_row)
+            and min_col == max_col
+            and min_row == max_row
+        )
+        if not is_single_cell:
+            raise ValueError(
+                f"Named slot '{name}' spans multiple cells ({clean_c}); "
+                f"scalar slot updates require a single cell."
+            )
+
+        # Normalize accepted single-cell range (e.g. 'B2:B2' -> 'B2') to a single coordinate
+        single_cell_coord = f"{get_column_letter(min_col)}{min_row}"
+
+        # Delegate to SetCellHandler for protection, collision tracking, formula checks
+        return SetCellHandler.validate(
+            wb,
+            {"sheet": sheet_name, "cell": single_cell_coord, "value": value},
+            tracker,
+        )
+
+    apply = SetCellHandler.apply
+    verify = SetCellHandler.verify
+
+
 class AppendTableHandler:
+    REQUIRED_KEYS = frozenset({"table", "rows"})
+    OPTIONAL_KEYS = frozenset()
+
     @staticmethod
     def validate(
         wb: openpyxl.Workbook,
@@ -92,8 +195,16 @@ class AppendTableHandler:
         tracker: ConflictTracker,
     ) -> dict[str, Any]:
 
-        t_name = operation.get("table")
-        rows = operation.get("rows", [])
+        t_name = operation["table"]
+        rows = operation["rows"]
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"append_table 'rows' must be a list, got {type(rows).__name__}."
+            )
+        if not rows:
+            raise ValueError(
+                "append_table 'rows' must be a non-empty list of row values."
+            )
 
         # 1. Find the table's sheet
         ws = next((s for s in wb.worksheets if t_name in s.tables), None)
@@ -111,18 +222,26 @@ class AppendTableHandler:
         headers = [
             ws.cell(row=min_row, column=c).value for c in range(min_col, max_col + 1)
         ]
+        header_str_set = {str(h) for h in headers if h is not None}
 
         # 3. Validate row shapes, normalize to header order, & check values
         normalized_rows = []
         for row in rows:
             if isinstance(row, dict):
-                unknown = set(row) - set(headers)
+                if not row:
+                    raise ValueError(
+                        f"Table '{t_name}' row dictionary cannot be empty."
+                    )
+                str_row = {str(k): v for k, v in row.items()}
+                unknown = [k for k in row if str(k) not in header_str_set]
                 if unknown:
                     raise ValueError(
-                        f"Table '{t_name}' has no column(s) {sorted(unknown)}. "
+                        f"Table '{t_name}' has no column(s) {sorted(unknown, key=str)}. "
                         f"Expected columns: {headers}"
                     )
-                row_vals = [row.get(h) for h in headers]
+                row_vals = [
+                    row[h] if h in row else str_row.get(str(h)) for h in headers
+                ]
             elif isinstance(row, (list, tuple)):
                 if len(row) != expected_cols:
                     raise ValueError(
@@ -235,8 +354,90 @@ class AppendTableHandler:
 OPERATION_HANDLERS = {
     "set_cell": SetCellHandler,
     "append_table": AppendTableHandler,
-    "append_rows": AppendTableHandler,
+    "set_slot": SetSlotHandler,
 }
+
+
+def _resolve_dest_path(
+    workspace: ExcelWorkspace,
+    file_name: str | Path,
+    output_filename: str | Path | None,
+    overwrite: bool,
+) -> tuple[Path, Path, str]:
+    """Resolves source and destination paths, validating the overwrite policy."""
+    src_path = workspace.resolve_path(file_name, must_exist=True)
+
+    if output_filename and str(output_filename) != str(file_name):
+        dest_path = workspace.resolve_path(output_filename, must_exist=False)
+        if dest_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Destination file '{output_filename}' already exists and overwrite=False."
+            )
+        output_name = str(output_filename)
+    else:
+        dest_path = src_path
+        output_name = str(file_name)
+
+    return src_path, dest_path, output_name
+
+
+def _validate_operation_envelope(
+    op: dict[str, Any],
+    handler: Any,
+    action: str,
+) -> None:
+    """Validates that required keys are present and no unknown keys were passed."""
+    keys = op.keys() - {"action"}
+    unknown = keys - handler.REQUIRED_KEYS - handler.OPTIONAL_KEYS
+    if unknown:
+        allowed = sorted(handler.REQUIRED_KEYS | handler.OPTIONAL_KEYS)
+        hints = []
+        for bad in sorted(unknown, key=str):
+            str_bad = str(bad)
+            close = get_close_matches(str_bad, allowed, n=1)
+            hints.append(
+                f"'{str_bad}'" + (f" (did you mean '{close[0]}'?)" if close else "")
+            )
+        raise ValueError(
+            f"Unknown key(s) {', '.join(hints)} for '{action}'. Allowed keys: {allowed}"
+        )
+
+    missing = handler.REQUIRED_KEYS - keys
+    if missing:
+        raise ValueError(
+            f"'{action}' requires key(s) {sorted(handler.REQUIRED_KEYS)}, "
+            f"missing: {sorted(missing)}"
+        )
+
+
+def _atomic_commit(
+    wb: openpyxl.Workbook,
+    dest_path: Path,
+    validated_ops: list[tuple[Any, dict[str, Any]]],
+    keep_vba: bool,
+) -> None:
+    """Saves workbook to a temp file, verifies on disk, and atomically replaces dest_path."""
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        dir=dest_path.parent, prefix=".tmp_", suffix=dest_path.suffix
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_path_str)
+
+    try:
+        wb.save(tmp_path)
+
+        verify_wb = openpyxl.load_workbook(tmp_path, keep_vba=keep_vba, data_only=False)
+        try:
+            for handler, validated in validated_ops:
+                handler.verify(verify_wb, validated)
+        finally:
+            verify_wb.close()
+
+        os.replace(tmp_path, dest_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
 
 
 def update_workbook(
@@ -245,33 +446,21 @@ def update_workbook(
     operations: list[dict[str, Any]] | None = None,
     output_filename: str | Path | None = None,
     overwrite: bool = False,
-    mutations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Applies an atomic batch of ordered operations to an Excel workbook."""
-    src_path = workspace.resolve_path(file_name, must_exist=True)
+    src_path, dest_path, out_name = _resolve_dest_path(
+        workspace, file_name, output_filename, overwrite
+    )
 
-    # Determine destination path
-    if output_filename and str(output_filename) != str(file_name):
-        dest_path = workspace.resolve_path(output_filename, must_exist=False)
-        if dest_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Destination file '{output_filename}' already exists and overwrite=False."
-            )
-        is_inplace = False
-    else:
-        dest_path = src_path
-        is_inplace = True
-
-    ops = operations if operations is not None else (mutations or [])
+    ops = operations or []
     if not ops:
         raise ValueError("No operations provided.")
 
     keep_vba = src_path.suffix.lower() in (".xlsm", ".xltm")
     wb = openpyxl.load_workbook(src_path, keep_vba=keep_vba, data_only=False)
-    tmp_path: Path | None = None
 
     try:
-        # 1. Preflight validation
+        # 1. validation
         tracker = ConflictTracker()
         validated_ops: list[tuple[Any, dict[str, Any]]] = []
 
@@ -282,43 +471,22 @@ def update_workbook(
                     f"Unsupported operation action: '{action}'. Supported actions: {list(OPERATION_HANDLERS.keys())}"
                 )
             handler = OPERATION_HANDLERS[action]
-            validated = handler.validate(wb, op, tracker)
-            validated_ops.append((handler, validated))
+            _validate_operation_envelope(op, handler, action)
+            validated_ops.append((handler, handler.validate(wb, op, tracker)))
 
         # 2. In-memory application
         for handler, validated in validated_ops:
             handler.apply(wb, validated)
 
         # 3. Atomic temporary write
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            dir=dest_path.parent, prefix=".tmp_", suffix=dest_path.suffix
-        )
-        os.close(tmp_fd)
-        tmp_path = Path(tmp_path_str)
-
-        wb.save(tmp_path)
+        _atomic_commit(wb, dest_path, validated_ops, keep_vba)
     finally:
         wb.close()
-
-    # 4. Post-save verification & 5. Atomic swap
-    try:
-        verify_wb = openpyxl.load_workbook(tmp_path, keep_vba=keep_vba, data_only=False)
-        try:
-            for handler, validated in validated_ops:
-                handler.verify(verify_wb, validated)
-        finally:
-            verify_wb.close()
-
-        os.replace(tmp_path, dest_path)
-    except Exception:
-        if tmp_path and tmp_path.exists():
-            tmp_path.unlink()
-        raise
 
     return {
         "status": "success",
         "file_name": str(file_name),
-        "output_file": str(dest_path.name if is_inplace else output_filename),
+        "output_file": out_name,
         "operations_applied": len(validated_ops),
     }
 
@@ -331,6 +499,9 @@ class UpdateWorkbookTool(BaseTool):
             description=(
                 "Apply an atomic batch of ordered operations to an Excel workbook. "
                 "Supported actions: 'set_cell' (keys: sheet, cell, value), "
+                "'set_slot' (keys: name, value; updates a single-cell defined "
+                "name — discover available names via inspect_workbook's "
+                "named_slots), "
                 "'append_table' (keys: table, rows; each row is a dict keyed by the "
                 "table's column names, e.g. {'Item': 'Mouse', 'Price': 50}, preferred, "
                 "or a list of scalar values in column order). "
@@ -350,7 +521,21 @@ class UpdateWorkbookTool(BaseTool):
                     },
                     "operations": {
                         "type": "array",
-                        "items": {"type": "object"},
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": [
+                                        "set_cell",
+                                        "set_slot",
+                                        "append_table",
+                                    ],
+                                    "description": "The operation action: 'set_cell', 'set_slot', or 'append_table'.",
+                                },
+                            },
+                            "required": ["action"],
+                        },
                         "description": "List of operations to apply.",
                     },
                     "overwrite": {
@@ -369,14 +554,13 @@ class UpdateWorkbookTool(BaseTool):
         operations: list[dict[str, Any]] | None = None,
         output_filename: str | None = None,
         overwrite: bool = False,
-        **kwargs: Any,
     ) -> dict[str, Any]:
         if not file_name:
             return {
                 "status": "error",
                 "error": "ValueError: Parameter 'file_name' is required.",
             }
-        ops = operations or kwargs.get("mutations")
+        ops = operations
         if not ops:
             return {
                 "status": "error",

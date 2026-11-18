@@ -4,10 +4,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import openpyxl
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table
 
 from agentoffice.tools.excel.workspace import ExcelWorkspace
 from agentoffice.tools.excel.write import (
+    OPERATION_HANDLERS,
     AppendTableHandler,
     SetCellHandler,
     UpdateWorkbookTool,
@@ -274,6 +276,27 @@ class TestExcelWrite(unittest.TestCase):
         tmp_files = list(self.workspace_path.glob(".tmp_*"))
         self.assertEqual(tmp_files, [])
 
+    def test_save_failure_cleans_up_temp_file(self):
+        # Simulate a crash during wb.save (e.g. disk full or serialization crash)
+        with patch.object(openpyxl.Workbook, "save", side_effect=OSError("Disk full")):
+            with self.assertRaises(OSError):
+                update_workbook(
+                    self.workspace,
+                    "test_data.xlsx",
+                    operations=[
+                        {
+                            "action": "set_cell",
+                            "sheet": "Summary",
+                            "cell": "B1",
+                            "value": 9999,
+                        }
+                    ],
+                )
+
+        # Confirm temporary files were cleaned up
+        tmp_files = list(self.workspace_path.glob(".tmp_*"))
+        self.assertEqual(tmp_files, [])
+
     def test_update_workbook_tool_execution(self):
         tool = UpdateWorkbookTool(workspace=self.workspace)
         result = tool.execute(
@@ -433,3 +456,458 @@ class TestExcelWrite(unittest.TestCase):
         with self.workspace.open_workbook("roundtrip.xlsx") as wb:
             self.assertEqual(wb["Summary"]["B2"].value, "=B1*0.2")
             self.assertEqual(wb["Orders"]["A3"].value, "Mouse")
+
+    def test_canonical_operation_names(self):
+        self.assertIn("set_cell", OPERATION_HANDLERS)
+        self.assertIn("append_table", OPERATION_HANDLERS)
+        self.assertNotIn("append_rows", OPERATION_HANDLERS)
+
+    def test_unknown_action_rejected_with_supported_list(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[{"action": "delete_sheet", "sheet": "Summary"}],
+            )
+        self.assertIn("Unsupported operation action", str(ctx.exception))
+        self.assertIn("set_cell", str(ctx.exception))
+        self.assertIn("append_table", str(ctx.exception))
+
+    def test_missing_required_key_rejected(self):
+        # Regression: a missing 'rows' key previously defaulted to [] and the
+        # batch silently succeeded as a no-op.
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[{"action": "append_table", "table": "OrdersTable"}],
+            )
+        self.assertIn("missing: ['rows']", str(ctx.exception))
+
+    def test_typo_key_rejected_with_suggestion(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "append_table",
+                        "table": "OrdersTable",
+                        "row": [["Mouse", 50]],
+                    }
+                ],
+            )
+        self.assertIn("did you mean 'rows'", str(ctx.exception))
+
+    def test_empty_rows_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {"action": "append_table", "table": "OrdersTable", "rows": []}
+                ],
+            )
+        self.assertIn("non-empty", str(ctx.exception))
+
+    def test_table_append_empty_dict_row_rejected(self):
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "append_table",
+                        "table": "OrdersTable",
+                        "rows": [{}],
+                    }
+                ],
+            )
+        self.assertIn("cannot be empty", str(ctx.exception))
+
+    def test_table_append_numeric_header_mapping(self):
+        # Create a workbook with numeric year headers in a table
+        num_hdr_file = "numeric_headers.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sales"
+        ws.append(["Region", "2024", "2025"])
+        ws.append(["North", 100, 200])
+        tab = Table(displayName="SalesTable", ref="A1:C2")
+        ws.add_table(tab)
+        wb.save(self.workspace_path / num_hdr_file)
+        wb.close()
+
+        # Test both integer keys (2024: 300) and string keys ("2024": 500)
+        result = update_workbook(
+            self.workspace,
+            num_hdr_file,
+            operations=[
+                {
+                    "action": "append_table",
+                    "table": "SalesTable",
+                    "rows": [
+                        {"Region": "South", 2024: 300, 2025: 400},
+                        {"Region": "West", "2024": 500, "2025": 600},
+                    ],
+                }
+            ],
+            output_filename="sales_updated.xlsx",
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook("sales_updated.xlsx") as saved_wb:
+            saved_ws = saved_wb["Sales"]
+            self.assertEqual(saved_ws["A3"].value, "South")
+            self.assertEqual(saved_ws["B3"].value, 300)
+            self.assertEqual(saved_ws["C3"].value, 400)
+            self.assertEqual(saved_ws["A4"].value, "West")
+            self.assertEqual(saved_ws["B4"].value, 500)
+            self.assertEqual(saved_ws["C4"].value, 600)
+
+    def test_unknown_non_string_key_rejected_without_type_error(self):
+        # Passing a non-string key in an operation must not raise TypeError in sorted() or difflib
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {
+                        "action": "set_cell",
+                        "cell": "A1",
+                        "value": 10,
+                        999: "unexpected",
+                    }
+                ],
+            )
+        self.assertIn("Unknown key(s) '999'", str(ctx.exception))
+
+    def test_set_slot_success(self):
+        # Create workbook with a single-cell defined name
+        slot_wb_file = "slot_test.xlsx"
+        slot_wb_path = self.workspace_path / slot_wb_file
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 0.10
+        defn = DefinedName("TaxRate", attr_text="Config!$B$2")
+        wb.defined_names.add(defn)
+        wb.save(slot_wb_path)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            slot_wb_file,
+            operations=[{"action": "set_slot", "name": "TaxRate", "value": 0.25}],
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["operations_applied"], 1)
+
+        with self.workspace.open_workbook(slot_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["Config"]["B2"].value, 0.25)
+
+    def test_set_slot_missing_name_raises_key_error(self):
+        with self.assertRaises(KeyError) as ctx:
+            update_workbook(
+                self.workspace,
+                "test_data.xlsx",
+                operations=[
+                    {"action": "set_slot", "name": "NonExistentSlot", "value": 100}
+                ],
+            )
+        self.assertIn("Named slot 'NonExistentSlot' not found", str(ctx.exception))
+
+    def test_set_slot_constant_or_formula_raises_value_error(self):
+        const_wb_file = "const_slot.xlsx"
+        wb = openpyxl.Workbook()
+        defn = DefinedName("ConstSlot", attr_text="0.25")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / const_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                const_wb_file,
+                operations=[{"action": "set_slot", "name": "ConstSlot", "value": 0.30}],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+
+    def test_set_slot_formula_expression_raises_value_error(self):
+        expr_wb_file = "expr_slot.xlsx"
+        wb = openpyxl.Workbook()
+        defn = DefinedName("ExprSlot", attr_text="Summary!$A$1+$B$1")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / expr_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                expr_wb_file,
+                operations=[{"action": "set_slot", "name": "ExprSlot", "value": 10}],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+
+    def test_set_slot_multi_cell_raises_value_error(self):
+        multi_wb_file = "multi_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        defn = DefinedName("MatrixSlot", attr_text="Data!$A$1:$B$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / multi_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                multi_wb_file,
+                operations=[{"action": "set_slot", "name": "MatrixSlot", "value": 42}],
+            )
+        self.assertIn("spans multiple cells", str(ctx.exception))
+
+    def test_set_slot_whole_column_range_rejected(self):
+        col_wb_file = "col_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        defn = DefinedName("ColSlot", attr_text="Data!A:A")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / col_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                col_wb_file,
+                operations=[{"action": "set_slot", "name": "ColSlot", "value": 42}],
+            )
+        self.assertIn("spans multiple cells", str(ctx.exception))
+
+    def test_set_slot_collision_with_set_cell_caught_by_tracker(self):
+        slot_wb_file = "collision_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Settings"
+        ws["C5"] = 10
+        defn = DefinedName("Threshold", attr_text="Settings!$C$5")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[
+                    {
+                        "action": "set_cell",
+                        "sheet": "Settings",
+                        "cell": "C5",
+                        "value": 20,
+                    },
+                    {"action": "set_slot", "name": "Threshold", "value": 30},
+                ],
+            )
+        self.assertIn("Conflicting update", str(ctx.exception))
+        self.assertIn("Settings!C5", str(ctx.exception))
+
+    def test_set_slot_formula_overwrite_protection(self):
+        formula_wb_file = "formula_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Math"
+        ws["A1"] = 10
+        ws["A2"] = "=A1*2"
+        defn = DefinedName("Doubled", attr_text="Math!$A$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / formula_wb_file)
+        wb.close()
+
+        with self.assertRaises(PermissionError) as ctx:
+            update_workbook(
+                self.workspace,
+                formula_wb_file,
+                operations=[{"action": "set_slot", "name": "Doubled", "value": 99}],
+            )
+        self.assertIn("contains formula", str(ctx.exception))
+
+    def test_set_slot_formula_injection_protection(self):
+        slot_wb_file = "inject_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Main"
+        ws["B2"] = 1
+        defn = DefinedName("TargetSlot", attr_text="Main!$B$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(PermissionError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[
+                    {
+                        "action": "set_slot",
+                        "name": "TargetSlot",
+                        "value": "+cmd|' /C calc'!A0",
+                    }
+                ],
+            )
+        self.assertIn("Formula injection prohibited", str(ctx.exception))
+
+    def test_set_slot_typo_suggests_close_match(self):
+        slot_wb_file = "typo_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 0.10
+        wb.defined_names.add(DefinedName("TaxRate", attr_text="Config!$B$2"))
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(KeyError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[{"action": "set_slot", "name": "tax_rate", "value": 0.2}],
+            )
+        self.assertIn("Did you mean 'TaxRate'?", str(ctx.exception))
+        self.assertIn("Available slots: ['TaxRate']", str(ctx.exception))
+
+    def test_set_slot_sheet_scoped_name_resolves(self):
+        slot_wb_file = "local_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B3"] = 0.5
+        ws.defined_names.add(DefinedName("LocalRate", attr_text="Config!$B$3"))
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            slot_wb_file,
+            operations=[{"action": "set_slot", "name": "LocalRate", "value": 0.75}],
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook(slot_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["Config"]["B3"].value, 0.75)
+
+    def test_set_slot_ambiguous_name_rejected(self):
+        slot_wb_file = "ambiguous_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        wb.defined_names.add(DefinedName("Rate", attr_text="Config!$B$2"))
+        ws.defined_names.add(DefinedName("Rate", attr_text="Config!$B$3"))
+        wb.save(self.workspace_path / slot_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                slot_wb_file,
+                operations=[{"action": "set_slot", "name": "Rate", "value": 1}],
+            )
+        self.assertIn("ambiguous", str(ctx.exception))
+
+    def test_set_slot_computed_expression_rejected(self):
+        computed_wb_file = "computed_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 10
+        defn = DefinedName("Computed", attr_text="Config!$B$2*2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / computed_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                computed_wb_file,
+                operations=[{"action": "set_slot", "name": "Computed", "value": 99}],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+
+    def test_set_slot_indirect_named_range_rejected(self):
+        indirect_wb_file = "indirect_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        ws["B2"] = 100
+        defn = DefinedName("IndirectSlot", attr_text="Config!B2_Input")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / indirect_wb_file)
+        wb.close()
+
+        with self.assertRaises(ValueError) as ctx:
+            update_workbook(
+                self.workspace,
+                indirect_wb_file,
+                operations=[
+                    {"action": "set_slot", "name": "IndirectSlot", "value": 99}
+                ],
+            )
+        self.assertIn("does not resolve to a worksheet grid cell", str(ctx.exception))
+        # Ensure B2 was not overwritten
+        with self.workspace.open_workbook(indirect_wb_file) as check_wb:
+            self.assertEqual(check_wb["Config"]["B2"].value, 100)
+
+    def test_set_slot_single_cell_range_normalized(self):
+        range_wb_file = "single_range_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Config"
+        defn = DefinedName("SingleRange", attr_text="Config!$B$2:$B$2")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / range_wb_file)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            range_wb_file,
+            operations=[{"action": "set_slot", "name": "SingleRange", "value": 42}],
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook(range_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["Config"]["B2"].value, 42)
+
+    def test_set_slot_escaped_apostrophe_sheet_name(self):
+        apostrophe_wb_file = "apostrophe_slot.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "O'Brien"
+        defn = DefinedName("OBrienSlot", attr_text="'O''Brien'!$A$1")
+        wb.defined_names.add(defn)
+        wb.save(self.workspace_path / apostrophe_wb_file)
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            apostrophe_wb_file,
+            operations=[{"action": "set_slot", "name": "OBrienSlot", "value": 99}],
+        )
+        self.assertEqual(result["status"], "success")
+
+        with self.workspace.open_workbook(apostrophe_wb_file) as saved_wb:
+            self.assertEqual(saved_wb["O'Brien"]["A1"].value, 99)
+
+    def test_update_workbook_preserves_subfolder_output_name(self):
+        sub_dir = self.workspace_path / "reports"
+        sub_dir.mkdir(parents=True, exist_ok=True)
+        wb = openpyxl.Workbook()
+        wb.save(sub_dir / "data.xlsx")
+        wb.close()
+
+        result = update_workbook(
+            self.workspace,
+            "reports/data.xlsx",
+            operations=[{"action": "set_cell", "cell": "A1", "value": "test"}],
+        )
+        self.assertEqual(result["file_name"], "reports/data.xlsx")

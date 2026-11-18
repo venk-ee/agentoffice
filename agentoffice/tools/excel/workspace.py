@@ -7,7 +7,7 @@ import openpyxl
 
 class ExcelWorkspace:
     def __init__(self, workspace_dir: str | Path):
-        self.workspace_dir = Path(workspace_dir)
+        self.workspace_dir = Path(workspace_dir).resolve()
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def resolve_path(self, path: str | Path, must_exist: bool = True) -> Path:

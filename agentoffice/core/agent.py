@@ -5,6 +5,7 @@ from abc import ABC
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from agentoffice.core.memory import AgentMemory
 from agentoffice.core.tool import BaseTool
 
 load_dotenv()
@@ -16,14 +17,26 @@ class BaseAgent(ABC):
         model: str = "gemini-3.5-flash-lite",
         system_prompt: str = "",
         tools: list[BaseTool] | None = None,
+        history: list[dict] | None = None,
+        on_tool_call=None,
+        memory=None,
+        client: OpenAI | None = None,
     ):
-        self.client = OpenAI(
+        self.client = client or OpenAI(
             api_key=os.getenv("GEMINI_API_KEY"),
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
         self.model = model
         self.system_prompt = system_prompt
         self.tool_map: dict[str, BaseTool] = {}
+        self.on_tool_call = on_tool_call
+        if memory is not None:
+            self.memory = memory
+        else:
+            self.memory = AgentMemory(system_prompt=system_prompt)
+            if history:
+                self.memory.history = list(history)
+
         if tools:
             for tool in tools:
                 self.register_tool(tool)
@@ -44,35 +57,80 @@ class BaseAgent(ABC):
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     def run(self, message: str, max_iterations: int = 10) -> str:
-        messages = []
-        if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
-        messages.append({"role": "user", "content": message})
+        prev_history_len = len(self.memory.history)
+        self.memory.add_user_message(message)
+
         tools_schema = [tool.to_schema() for tool in self.tool_map.values()] or None
 
-        for turn in range(max_iterations):
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=tools_schema,
-            )
+        try:
+            for turn in range(max_iterations):
+                # Check token budget before each LLM call to prevent exceeding limits
+                self.compact(force=False)
 
-            response_message = response.choices[0].message
-            messages.append(response_message)
-
-            if not response_message.tool_calls:
-                return response_message.content
-
-            for tool_call in response_message.tool_calls:
-                result = self.execute_tool(
-                    tool_call.function.name, tool_call.function.arguments
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    tools=tools_schema,
+                    messages=self.memory.history,
                 )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_call.function.name,
-                        "content": result,
-                    }
-                )
-        return "Max iterations reached"
+
+                response_message = response.choices[0].message
+                if response.usage:
+                    self.memory.record_usage(response.usage)
+                self.memory.add_assistant_message(response_message)
+
+                if not response_message.tool_calls:
+                    return response_message.content
+
+                for tool_call in response_message.tool_calls:
+                    try:
+                        result = self.execute_tool(
+                            tool_call.function.name, tool_call.function.arguments
+                        )
+                    except Exception as exc:
+                        # Record the error so the conversation history remains valid
+                        result = f"Error executing {tool_call.function.name}: {exc}"
+
+                    self.memory.add_tool_message(
+                        tool_call.id, tool_call.function.name, result
+                    )
+
+                    if self.on_tool_call:
+                        try:
+                            print(f"Tool called: {tool_call.function.name}")
+                            self.on_tool_call(
+                                tool_call.function.name,
+                                tool_call.function.arguments,
+                                result,
+                            )
+                        except Exception:
+                            # Callback failures should never crash other tool executions
+                            pass
+            return "Max tool calls reached"
+        except Exception:
+            # If the request failed before completing an assistant turn, remove
+            # the unanswered user message so history maintains a valid role sequence
+            if (
+                len(self.memory.history) == prev_history_len + 1
+                and self.memory.history[-1].get("role") == "user"
+            ):
+                self.memory.history.pop()
+            raise
+
+    def clear_history(self):
+        self.memory.clear_history()
+        return self.memory.history
+
+    @property
+    def history(self) -> list[dict]:
+        return self.memory.history
+
+    @property
+    def session_usage(self) -> dict:
+        return self.memory.session_usage
+
+    @property
+    def last_usage(self) -> dict:
+        return self.memory.last_usage
+
+    def compact(self, force: bool = True):
+        return self.memory.compact(self.client, self.model, force=force)
