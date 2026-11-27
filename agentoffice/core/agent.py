@@ -96,7 +96,6 @@ class BaseAgent(ABC):
 
                     if self.on_tool_call:
                         try:
-                            print(f"Tool called: {tool_call.function.name}")
                             self.on_tool_call(
                                 tool_call.function.name,
                                 tool_call.function.arguments,

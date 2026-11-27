@@ -35,7 +35,8 @@ class ChatInterface:
                 )
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start the interactive Excel assistant CLI session."""
     workspace = Path("./workspace").resolve()
     tools = create_excel_tools(workspace)
     agent = BaseAgent(
@@ -46,3 +47,7 @@ if __name__ == "__main__":
     )
     interface = ChatInterface(agent=agent)
     interface.run()
+
+
+if __name__ == "__main__":
+    main()
